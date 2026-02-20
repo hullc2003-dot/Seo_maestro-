@@ -1,12 +1,5 @@
-fastapi
-uvicorn
-groq
-pathlib
-pydantic>=2.7.0
-python-dotenv>=1.0.1
-supabase==2.28.0
-langchain 
-langchain-core 
-langchain-community 
-langchain-groq 
-langgraph
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+# Native python-dotenv for environment management
+python-dotenv>=1.0.0
+# The core logic uses http.client (built-in), so no 'requests' needed.
