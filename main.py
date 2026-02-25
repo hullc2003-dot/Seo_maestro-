@@ -178,11 +178,10 @@ async def call_llm(p):
             logger.info(f"[Groq] tokens this call: {total_tokens} | TPM window: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
 
             return resp["choices"][0]["message"]["content"]
-        except:
-                    except Exception as e:
+               
+        except Exception as e:
             logger.error(f"[Groq] API call failed: {e}")
-            GROQ_TOKEN_LOG.append((time.time(), 500))
-            return '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
+
 
 
 # ─── AUTONOMOUS ENGINE ────────────────────────────────────────────────────────
