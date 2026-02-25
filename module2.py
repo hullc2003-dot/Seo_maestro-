@@ -13,6 +13,7 @@ import re
 import tempfile
 
 from module1 import K, T, R, STATE, CTX_MAX_CHARS, signal_ui, logger
+from module4 import 
 
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
