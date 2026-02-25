@@ -68,9 +68,9 @@ app.add_middleware(
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 
-K = os.getenv("GROQ_API_KEY")
-T = os.getenv("GH_TOKEN")
-R = os.getenv("REPO_PATH")
+K = (os.getenv("GROQ_API_KEY") or "").strip()
+T = (os.getenv("GH_TOKEN") or "").strip()
+R = (os.getenv("REPO_PATH") or "").strip()
 STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
 
 # ─── CONTEXT TRUNCATION LIMIT (chars) — prevents Groq 413 errors ─────────────
@@ -81,14 +81,10 @@ CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
-# FIX 1: default m=None and **kwargs absorb unknown keyword args the LLM may send
-
 def fn_2_log(m=None, **kwargs):
     msg = m or json.dumps(kwargs) or "Log recorded"
     logger.info(f"[Reflect]: {msg}")
     return "Log recorded"
-
-# FIX 3: replaced eval with simpleeval to prevent code execution via user input
 
 def fn_3_math(e):
     try:
@@ -107,8 +103,6 @@ def fn_7_mut(p="", **kwargs):
         return "Mut rejected: empty ruleset"
     STATE["rules"] = new_rules.strip()
     return "Core Rules Redefined"
-
-# FIX 2: replaced blocking http.client with async httpx
 
 async def fn_commit(path, content, msg):
     try:
@@ -160,21 +154,17 @@ PRMPTS = [
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
 
 GROQ_SEMAPHORE = asyncio.Semaphore(3)
-
 GROQ_CALL_TIMES: list[float] = []
-GROQ_TOKEN_LOG: list[tuple[float, int]] = []   # (timestamp, tokens_used)
-GROQ_DAY_CALLS: list[float] = []               # timestamps for RPD tracking
+GROQ_TOKEN_LOG: list[tuple[float, int]] = []
+GROQ_DAY_CALLS: list[float] = []
 
-GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))      # requests/min
-GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28000))  # tokens/min
-GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
+GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))
+GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28000))
+GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
-
-# FIX 3: Strengthened system prompt to enforce JSON-only output and document
-# the exact allowed tool names + arg schema so the LLM doesn't invent fields.
 
 SYSTEM_PROMPT_TEMPLATE = (
     "{rules}. "
@@ -189,32 +179,26 @@ SYSTEM_PROMPT_TEMPLATE = (
 async def call_llm(p) -> str:
     async with GROQ_SEMAPHORE:
         now = time.time()
-
-        # ── Sliding windows ──────────────────────────────────────────────────
         GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
         GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
         GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
 
-        # ── RPD guard ────────────────────────────────────────────────────────
         if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
             wait = 86_400 - (now - GROQ_DAY_CALLS[0])
             logger.warning(f"[Groq throttle] RPD cap hit — waiting {wait:.0f}s (~{wait/3600:.1f}h)")
             await asyncio.sleep(wait)
 
-        # ── RPM guard ────────────────────────────────────────────────────────
         if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
             wait = 60 - (now - GROQ_CALL_TIMES[0])
             logger.warning(f"[Groq throttle] RPM cap hit — waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
-        # ── TPM guard ────────────────────────────────────────────────────────
         tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
         if tokens_used >= GROQ_TPM_LIMIT:
             wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
             logger.warning(f"[Groq throttle] TPM cap hit ({tokens_used} used) — waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
-        # ── Register this call ───────────────────────────────────────────────
         ts = time.time()
         GROQ_CALL_TIMES.append(ts)
         GROQ_DAY_CALLS.append(ts)
@@ -265,9 +249,7 @@ async def call_llm(p) -> str:
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(5):
-        # FIX 4: truncate ctx before sending to prevent Groq 413 errors
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
-
         raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
         if not raw:
@@ -282,13 +264,11 @@ async def run_autonomous_loop(input_str: str) -> str:
 
         t, a = data.get("tool"), data.get("args", {})
 
-        # FIX 5: skip cleanly when LLM emits tool="none" or omits tool entirely
         if not t or t.lower() == "none":
             logger.info(f"[Loop] Step {i}: LLM chose no tool — skipping")
             ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
             continue
 
-        # FIX: prevent LLM from invoking commit mid-loop; it runs once after all steps
         if t == "commit":
             logger.warning(f"[Loop] Step {i}: LLM tried to call 'commit' mid-loop — blocked")
             ctx += f"\n[Step {i}] Commit blocked (runs at end) | Reasoning: {data.get('thought')}"
