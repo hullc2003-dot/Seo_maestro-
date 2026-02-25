@@ -18,28 +18,32 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         elapsed = (time.perf_counter() - start) * 1000
         logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
-    return response
+        return response # Fixed: Was outside the function
 
-# ─── MIDDLEWARE: Rate Limiter (per IP, in-memory) ─────────────────────────────
+# ─── MIDDLEWARE: Rate Limiter ────────────────────────────────────────────────
 
 RATE_STORE: dict[str, list[float]] = {}
-RATE_LIMIT  = int(os.getenv("RATE_LIMIT",  20))   # requests
-RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))   # seconds
+RATE_LIMIT  = int(os.getenv("RATE_LIMIT",  20))
+RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         ip  = request.client.host
         now = time.time()
         hits = [t for t in RATE_STORE.get(ip, []) if now - t < RATE_WINDOW]
-    if len(hits) >= RATE_LIMIT:
-        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+        
+        if len(hits) >= RATE_LIMIT:
+            return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+        
         hits.append(now)
         RATE_STORE[ip] = hits
-# FIX FLOW-2: evict IPs whose last hit is older than 2× the window
-    stale = [k for k, v in RATE_STORE.items() if v and now - v[-1] > RATE_WINDOW * 2]
-    for k in stale:
-        del RATE_STORE[k]
-    return await call_next(request)
+
+        # Cleanup stale entries
+        stale = [k for k, v in RATE_STORE.items() if v and now - v[-1] > RATE_WINDOW * 2]
+        for k in stale:
+            del RATE_STORE[k]
+            
+        return await call_next(request)
 
 # ─── MIDDLEWARE: Error Handler ────────────────────────────────────────────────
 
@@ -47,209 +51,88 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try: 
             return await call_next(request)
-        except Exception as exc:logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"Unhandled exception: {exc}", exc_info=True)
             return JSONResponse(
                 {"error": "Internal server error", "detail": str(exc)}, status_code=500)
 
 app = FastAPI(title="Autonomous Agent", version="2.0")
 
-# ─── REGISTER MIDDLEWARES (order matters: first added = outermost) ────────────
-
-app.add_middleware(ErrorHandlerMiddleware)
-app.add_middleware(LoggingMiddleware)
-app.add_middleware(RateLimitMiddleware)
-
-app.add_middleware(
-CORSMiddleware,
-allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-allow_methods=["*"],
-allow_headers=["*"],
-)
-app.add_middleware(
-TrustedHostMiddleware,
-allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(","),
-)
-
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-
-K = (os.getenv("GROQ_API_KEY") or "").strip()
-T = (os.getenv("GH_TOKEN")     or "").strip()
-R = (os.getenv("REPO_PATH")    or "").strip()
-STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
-
-# ─── CONTEXT TRUNCATION LIMIT (chars) ─────────────────────────────────────────
-
-CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
-
-# ─── UI SIGNAL (defined early so fn_commit can reference it) ──────────────────
-
-# FIX FLOW-1: moved above fn_commit to make the dependency explicit
+# ─── CONFIG & UI SIGNAL ───────────────────────────────────────────────────────
 
 CONTACT_UI_URL = (os.getenv("UI_STATUS_URL", "")).strip()
 
-async def signal_ui(status: str):"""POST a status message to the configured UI endpoint (UI_STATUS_URL env var)."""
+async def signal_ui(status: str):
+    """POST a status message to the configured UI endpoint."""
     if not CONTACT_UI_URL:
-    return
+        return
     try:
-async with httpx.AsyncClient() as client:resp = await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
-    if resp.status_code != 200:logger.warning(f"[UI] Signal returned HTTP {resp.status_code}")
-    else:logger.info(f"[UI] Signaled: {status}")except Exception as exc:logger.warning(f"[UI] Signal failed (non-fatal): {exc}")
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
+            if resp.status_code != 200:
+                logger.warning(f"[UI] Signal returned HTTP {resp.status_code}")
+            else:
+                logger.info(f"[UI] Signaled: {status}")
+    except Exception as exc:
+        logger.warning(f"[UI] Signal failed (non-fatal): {exc}")
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
 
-def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
+STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
 
-def fn_2_log(m=None, **kwargs):
-    msg = m or json.dumps(kwargs) or "Log recorded"
-    logger.info(f"[Reflect]: {msg}")
-return "Log recorded"
-
-# FIX FLOW-3: accept both 'e' and common aliases so the LLM isn't brittle
-
-def fn_3_math(e=None, expression=None, expr=None, **kwargs):
-    formula = e or expression or expr or ""
-    if not formula:
-return "Math Err: no expression"
-    try:
-    from simpleeval import simple_eval
-return simple_eval(formula)except Exception:
-return "Math Err"
-
-def fn_4_fmt(d="", **kwargs): return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
-def fn_5_chk(g="", **kwargs): return f"Goal Alignment: {g or json.dumps(kwargs)}"
-def fn_6_ui(d="",  **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
-
-def fn_7_mut(p="", **kwargs):new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
-    if not new_rules or not new_rules.strip():logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
-return "Mut rejected: empty ruleset"STATE["rules"] = new_rules.strip()
-return "Core Rules Redefined"
-
-JSON_ENFORCEMENT = (" Always respond with a single valid JSON object only – ""no markdown, no prose, no code fences. "
-'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
-)
+def fn_7_mut(p="", **kwargs):
+    new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
+    if not new_rules or not new_rules.strip():
+        logger.warning("[mut] Rejected empty ruleset")
+        return "Mut rejected: empty ruleset"
+    STATE["rules"] = new_rules.strip()
+    return "Core Rules Redefined"
 
 # ─── GITHUB COMMIT ────────────────────────────────────────────────────────────
 
 async def fn_commit(path, content, msg):
+    T = (os.getenv("GH_TOKEN") or "").strip()
+    R = (os.getenv("REPO_PATH") or "").strip()
     try:
-    if not T:logger.error("[Commit] GH_TOKEN env var is not set")
-return "Save_Failed: no GH_TOKEN"
-    if not R:logger.error("[Commit] REPO_PATH env var is not set")
-return "Save_Failed: no REPO_PATH"headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
-async with httpx.AsyncClient() as client:get_resp = await client.get(
-    f"https://api.github.com/repos/{R}/contents/{path}",headers=headers)get_data = get_resp.json()
-    if get_resp.status_code not in (200, 404):logger.error(f"[Commit] GET failed {get_resp.status_code}: {get_data}")
-return f"Save_Failed: GET {get_resp.status_code}"
-    sha = get_data.get("sha", "")
-    put_resp = await client.put(
-    f"https://api.github.com/repos/{R}/contents/{path}",headers=headers,
-    json={"message": msg,"content": base64.b64encode(content.encode()).decode(),"sha": sha,
-},
-)
-put_data = put_resp.json()if put_resp.status_code not in (200, 201):logger.error(f"[Commit] PUT failed {put_resp.status_code}: {put_data}")
-return f"Save_Failed: PUT {put_resp.status_code}"
-saved = f"Saved_{put_resp.status_code}"
-# FIX BUG-7: asyncio.create_task() instead of deprecated ensure_future()
-asyncio.create_task(signal_ui(f"Committed {path}"))
-    return saved 
-except Exception as e:logger.error(f"[Commit] Exception: {e}", exc_info=True)
-return "Save_Failed"
+        if not T or not R:
+            return "Save_Failed: missing credentials"
+            
+        headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+        async with httpx.AsyncClient() as client:
+            # GET existing file for SHA
+            get_resp = await client.get(f"https://api.github.com/repos/{R}/contents/{path}", headers=headers)
+            sha = get_resp.json().get("sha", "") if get_resp.status_code == 200 else ""
+            
+            # PUT new content
+            put_resp = await client.put(
+                f"https://api.github.com/repos/{R}/contents/{path}",
+                headers=headers,
+                json={
+                    "message": msg,
+                    "content": base64.b64encode(content.encode()).decode(),
+                    "sha": sha,
+                },
+            )
+            if put_resp.status_code not in (200, 201):
+                return f"Save_Failed: PUT {put_resp.status_code}"
+                
+            asyncio.create_task(signal_ui(f"Committed {path}"))
+            return f"Saved_{put_resp.status_code}"
+    except Exception as e:
+        logger.error(f"[Commit] Exception: {e}")
+        return "Save_Failed"
 
-# ─── LANGCHAIN BOOTSTRAP ──────────────────────────────────────────────────────
+# ─── BOOTSTRAP ────────────────────────────────────────────────────────────────
 
 def _ensure_pkg(pkg, import_as=None):
-"""Install a package at runtime if missing."""
-name = import_as or pkg.split("[")[0]
-try:
-# FIX BUG-1: **import** was mangled to **import** by markdown renderer
-**import**(name)
-except ImportError:
-logger.info(f"[Bootstrap] Installing {pkg}…")
-# FIX BUG-2: em-dash "–quiet" → double-hyphen "–quiet"
-subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "–quiet"])
+    name = import_as or pkg.split("[")[0]
+    try:
+        __import__(name) # Fixed: Corrected from mangled text
+    except ImportError:
+        logger.info(f"[Bootstrap] Installing {pkg}...")
+        # Fixed: Changed em-dash to double-hyphen --quiet
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
 
-def fn_8_pip(package="", **kwargs):
-"""Install a Python package so it can be used in future tool calls."""
-pkg = package or kwargs.get("pkg", "")
-if not pkg:
-return "pip_err: no package name"
-try:
-_ensure_pkg(pkg)
-return f"Installed: {pkg}"
-except Exception as e:
-logger.error(f"[pip] {e}")
-return f"pip_err: {e}"
-
-def fn_9_lc_tool(tool="", input="", **kwargs):
-"""Run a LangChain community tool by name (e.g. 'ddg-search', 'wikipedia')."""
-tool = tool or kwargs.get("name", "")
-inp  = input or kwargs.get("query", "") or kwargs.get("input", "")
-if not tool or not inp:
-return "lc_err: need tool and input"
-try:
-_ensure_pkg("langchain-community", "langchain_community")
-_ensure_pkg("duckduckgo-search",   "duckduckgo_search")
-if tool in ("ddg-search", "search", "web"):
-from langchain_community.tools import DuckDuckGoSearchRun
-return DuckDuckGoSearchRun().run(inp)[:1500]
-if tool in ("wikipedia", "wiki"):
-_ensure_pkg("wikipedia", "wikipedia")
-from langchain_community.tools import WikipediaQueryRun
-from langchain_community.utilities import WikipediaAPIWrapper
-return WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()).run(inp)[:1500]
-return f"lc_err: unknown tool '{tool}'"
-except Exception as e:
-logger.error(f"[lc_tool] {e}", exc_info=True)
-return f"lc_err: {e}"
-
-# ─── GITHUB FILE READER ───────────────────────────────────────────────────────
-
-async def fn_read_github(path="", **kwargs):
-"""Read any file from the repo. Use path='agents.md' or path='main.py'."""
-path = path or kwargs.get("file", "")
-if not path:
-return "read_err: no path"
-if not T or not R:
-return "read_err: missing GH_TOKEN or REPO_PATH"
-try:
-headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
-async with httpx.AsyncClient() as client:
-resp = await client.get(
-f"https://api.github.com/repos/{R}/contents/{path}",
-headers=headers, timeout=15.0,
-)
-data = resp.json()
-if resp.status_code != 200:
-return f"read_err: {resp.status_code} {data.get('message','')}"
-content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-logger.info(f"[ReadGitHub] {path} ({len(content)} chars)")
-return content[:6000]
-except Exception as e:
-logger.error(f"[ReadGitHub] {e}", exc_info=True)
-return f"read_err: {e}"
-
-# ─── SELF-PATCH TOOLS ─────────────────────────────────────────────────────────
-
-# FIX BUG-6 / BUG-5: use a consistent, minimal patch header so that
-
-# fn_propose_patch and fn_apply_patch agree on the marker format.
-
-PATCH_HEADER_PREFIX = "# — PATCH:"   # hyphens only, no em-dash
-
-async def fn_propose_patch(instruction="", **kwargs):
-"""Ask the LLM to generate a targeted code patch aligning main.py with agents.md.
-Writes result to main_patch.py on GitHub for review before applying."""
-instruction = instruction or kwargs.get("desc", "")
-if not instruction:
-return "patch_err: no instruction"
-current_code = await fn_read_github("main.py")
-agents_spec  = await fn_read_github("agents.md")
-if "read_err" in current_code:
-return f"patch_err: could not read main.py – {current_code}"
-if "read_err" in agents_spec:
-return f"patch_err: could not read agents.md – {agents_spec}"
-
-```
 prompt = (
     f"You are a Python engineer making a MINIMAL addition to an existing file.\n\n"
     f"agents.md spec (excerpt):\n{agents_spec[:600]}\n\n"
