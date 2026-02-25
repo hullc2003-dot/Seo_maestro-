@@ -13,7 +13,6 @@ import re
 import tempfile
 
 from module1 import K, T, R, STATE, CTX_MAX_CHARS, signal_ui, logger
-import auto_code_gen
 
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
@@ -218,15 +217,15 @@ async def fn_align_with_spec(**kwargs):
             rdata = resp.json()
             if "choices" not in rdata:
                 return f"align_partial: {rdata.get('error', rdata)}"
-            gap = rdata["choices"][0]["message"]["content"].strip()
-            logger.info(f"[Align] Gap: {gap}")
+                gap = rdata["choices"][0]["message"]["content"].strip()
+                logger.info(f"[Align] Gap: {gap}")
             await asyncio.sleep(10)
-            patch_result = await fn_propose_patch(instruction=gap)
-            return f"Gap: {gap} | {patch_result}"
-    except Exception as e:
-        return f"align_err: {e}"
+                patch_result = await fn_propose_patch(instruction=gap)
+                return f"Gap: {gap} | {patch_result}"
+            except Exception as e:
+                return f"align_err: {e}"
 
-async def fn_auto_gen_code
+def fn_auto_gen_code
 
     def _render_template(req: Dict) -> str:
         """Create a simple function based on a high‑level requirement."""
