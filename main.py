@@ -162,6 +162,7 @@ async def run_autonomous_loop(input_str: str):
     return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -169,6 +170,7 @@ def health():
 @app.get("/status")
 def status():
     return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
+
 
 # ─── CHAT ROUTE (matches your UI exactly) ─────────────────────────────────────
 
