@@ -91,7 +91,18 @@ def fn_3_math(e=None, expression=None, expr=None, **kwargs):
 
 def fn_4_fmt(d="", **kwargs): return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
 
-def fn_5_chk(g="", **kwargs): return f"Goal Alignment: {g or json.dumps(kwargs)}"
+def fn_5_chk(threshold: float = 0.8) -> bool:
+    """
+    Validate current alignment against the given threshold.
+    Returns True if alignment >= threshold, else False.
+    """
+    try:
+        # `alignment_score` should be maintained elsewhere in the agent.
+        score = globals().get("alignment_score", 1.0)
+        return float(score) >= threshold
+    except Exception:
+        logger.exception("[fn_5_chk] Alignment check failed")
+        return False
 
 def fn_6_ui(d="", **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 
