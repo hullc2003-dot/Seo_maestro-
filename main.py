@@ -15,7 +15,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
         logger.info(f"→ {request.method} {request.url.path} | Client: {request.client.host}")
-        # 
         response = await call_next(request)
         elapsed = (time.perf_counter() - start) * 1000
         logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
@@ -80,7 +79,7 @@ CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
 
-def fn_1_env(k): return os.getenv(k, "Null")
+def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
 # FIX 1: default m=None and **kwargs absorb unknown keyword args the LLM may send
 
@@ -98,10 +97,10 @@ def fn_3_math(e):
     except Exception:
         return "Math Err"
 
-def fn_4_fmt(d): return f"### ANALYSIS ###\n{d}"
-def fn_5_chk(g): return f"Goal Alignment: {g}"
-def fn_6_ui(d): return f"UI_UPDATE: {d}"
-def fn_7_mut(p): STATE["rules"] = p; return "Core Rules Redefined"
+def fn_4_fmt(d="", **kwargs): return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
+def fn_5_chk(g="", **kwargs): return f"Goal Alignment: {g or json.dumps(kwargs)}"
+def fn_6_ui(d="", **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
+def fn_7_mut(p="", **kwargs): STATE["rules"] = p or json.dumps(kwargs); return "Core Rules Redefined"
 
 # FIX 2: replaced blocking http.client with async httpx
 
@@ -154,7 +153,7 @@ GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 # FIX 3: Strengthened system prompt to enforce JSON-only output and document
-# the exact allowed tool names + arg schema so the LLM doesn’t invent fields.
+# the exact allowed tool names + arg schema so the LLM doesn't invent fields.
 
 SYSTEM_PROMPT_TEMPLATE = (
     "{rules}. "
@@ -268,6 +267,12 @@ async def run_autonomous_loop(input_str: str) -> str:
             ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
             continue
 
+        # FIX: prevent LLM from invoking commit mid-loop; it runs once after all steps
+        if t == "commit":
+            logger.warning(f"[Loop] Step {i}: LLM tried to call 'commit' mid-loop — blocked")
+            ctx += f"\n[Step {i}] Commit blocked (runs at end) | Reasoning: {data.get('thought')}"
+            continue
+
         if t in TOOLS:
             try:
                 res = TOOLS[t](**a)
@@ -280,8 +285,7 @@ async def run_autonomous_loop(input_str: str) -> str:
         else:
             logger.warning(f"[Loop] Step {i}: unknown or missing tool '{t}'")
 
-        await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
-
+    await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
     return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
