@@ -143,31 +143,42 @@ prompt = (
     f"Output MUST start with exactly: {PATCH_HEADER_PREFIX} <description> ---\n"
     "No markdown fences. Raw Python only. Max 60 lines."
 )
-try:
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-            json={
-                # FIX BUG-4: valid Groq model name
-                "model": "compound-beta",
-                "messages": [
-                    {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
-                    {"role": "user",   "content": prompt},
-                ],
-                "max_tokens": 1024,
-            },
-            timeout=60.0,
-        )
-    rdata2 = resp.json()
-    if "choices" not in rdata2:
-        err = rdata2.get("error", rdata2)
-        logger.error(f"[ProposePatch] Groq call failed: {err}")
-        return f"patch_err: groq={err}"
-    proposed = rdata2["choices"][0]["message"]["content"].strip()
-    if proposed.startswith("```"):
-        proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
-    # FIX BUG-8: commit path and return message now agree
+        try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                json={
+                    # FIX BUG-4: valid Groq model name
+                    "model": "compound-beta",
+                    "messages": [
+                        {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    "max_tokens": 1024,
+                },
+                timeout=60.0,
+            )
+            rdata2 = resp.json()
+            if "choices" not in rdata2:
+                err = rdata2.get("error", rdata2)
+                logger.error(f"[ProposePatch] Groq call failed: {err}")
+                return f"patch_err: groq={err}"
+            
+            proposed = rdata2["choices"][0]["message"]["content"].strip()
+            if proposed.startswith("```"):
+                # Strip markdown fences safely
+                proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+            # FIX BUG-8: Commit path and finalize
+            final_patch = f"{PATCH_HEADER_PREFIX}\n{proposed}"
+            result = await fn_commit("main_patch.py", final_patch, "Propose Patch")
+            return f"Patch Proposed: {result}"
+
+    except Exception as e:
+        logger.error(f"[ProposePatch] Unexpected error: {e}")
+        return f"patch_err: {e}"
+ # FIX BUG-8: commit path and return message now agree
     result = await fn_commit("main_patch.py", proposed, f"[AutoPatch] {instruction[:80]}")
     logger.info(f"[ProposePatch] Patch saved to main_patch.py — review before applying")
     return f"Proposed patch committed as main_patch.py — {result}"
