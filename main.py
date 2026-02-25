@@ -135,7 +135,7 @@ GROQ_TOKEN_LOG: list[tuple[float, int]] = []   # (timestamp, tokens_used)
 GROQ_DAY_CALLS: list[float] = []               # timestamps for RPD tracking
 
 GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))      # requests/min
-GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT",  70_000))  # tokens/min
+GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28,000))  # tokens/min
 GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
