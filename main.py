@@ -134,7 +134,7 @@ async def call_llm(p):
         try:
             c = http.client.HTTPSConnection("api.groq.com")
             body = json.dumps({
-                "model": "llama3-70b-8192",
+                "model": "groq/compound",
                 "messages": [
                     {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
                     {"role": "user", "content": p}
