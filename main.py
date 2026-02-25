@@ -533,6 +533,12 @@ async def fn_run_tests(filename="", **kwargs):
     asyncio.create_task(signal_ui(f"Tests done: {len(results)} file(s)"))
     return summary[:2000]
 
+async def fn_reload_prompts(**kwargs):
+    """Tool: reload PRMPTS from agents.md on demand."""
+    updated = await reload_prompts_from_agents_md()
+    return f"prompts_reloaded: {len(PRMPTS)} steps | from_agents_md={updated}"
+
+
 # ─── TOOL REGISTRY ────────────────────────────────────────────────────────────
 
 TOOLS: dict = {
@@ -636,10 +642,6 @@ async def reload_prompts_from_agents_md() -> bool:
     logger.info(f"[Prompts] Loaded {len(PRMPTS)} steps from agents.md")
     return True
 
-async def fn_reload_prompts(**kwargs):
-    """Tool: reload PRMPTS from agents.md on demand."""
-    updated = await reload_prompts_from_agents_md()
-    return f"prompts_reloaded: {len(PRMPTS)} steps | from_agents_md={updated}"
 
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
 
