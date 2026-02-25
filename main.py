@@ -143,16 +143,13 @@ return f"Save_Failed: GET {get_resp.status_code}"
     json={"message": msg,"content": base64.b64encode(content.encode()).decode(),"sha": sha,
 },
 )
-put_data = put_resp.json()
-if put_resp.status_code not in (200, 201):
-logger.error(f"[Commit] PUT failed {put_resp.status_code}: {put_data}")
+put_data = put_resp.json()if put_resp.status_code not in (200, 201):logger.error(f"[Commit] PUT failed {put_resp.status_code}: {put_data}")
 return f"Save_Failed: PUT {put_resp.status_code}"
 saved = f"Saved_{put_resp.status_code}"
 # FIX BUG-7: asyncio.create_task() instead of deprecated ensure_future()
 asyncio.create_task(signal_ui(f"Committed {path}"))
-return saved
-except Exception as e:
-logger.error(f"[Commit] Exception: {e}", exc_info=True)
+    return saved 
+except Exception as e:logger.error(f"[Commit] Exception: {e}", exc_info=True)
 return "Save_Failed"
 
 # ─── LANGCHAIN BOOTSTRAP ──────────────────────────────────────────────────────
