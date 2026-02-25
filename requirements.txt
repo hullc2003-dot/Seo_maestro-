@@ -1,5 +1,2 @@
-fastapi>=0.100.0
-uvicorn[standard]>=0.20.0
-# Native python-dotenv for environment management
-python-dotenv>=1.0.0
-# The core logic uses http.client (built-in), so no 'requests' needed.
+fastapi
+uvicorn[standard]
