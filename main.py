@@ -308,15 +308,14 @@ SYSTEM_PROMPT_TEMPLATE = (
 )
 
 async def call_llm(p) -> str:
-async with GROQ_SEMAPHORE:
-# FIX FLOW-7: serialize rate-check + register under a lock
-async with GROQ_RATE_LOCK:
-now = time.time()
-GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
-GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
-GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
+    async with GROQ_SEMAPHORE:
+        # FIX FLOW-7: serialize rate-check + register under a lock
+        async with GROQ_RATE_LOCK:
+            now = time.time()
+            GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
+            GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
+            GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
 
-```
         if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
             wait = 86_400 - (now - GROQ_DAY_CALLS[0])
             logger.warning(f"[Groq throttle] RPD cap – waiting {wait:.0f}s (~{wait/3600:.1f}h)")
@@ -388,16 +387,14 @@ GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
         logger.error(f"[Groq] API call failed: {e}", exc_info=True)
         GROQ_TOKEN_LOG.append((time.time(), 500))
         return FALLBACK
-```
 
 # ─── AUTONOMOUS ENGINE ────────────────────────────────────────────────────────
 
 async def run_autonomous_loop(input_str: str) -> str:
-ctx = input_str
-for i in range(6):
-ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
+    ctx = input_str
+    for i in range(6):
+    ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
 
-```
     # FIX BUG-3: PRMPTS[i] not PRMPTS[i % 5] — ensures step 5 gets the align prompt
     raw = await call_llm(
         f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i]}"
@@ -470,52 +467,51 @@ ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
     else:
         logger.warning(f"[Loop] Step {i}: unknown tool '{t}'")
 
-commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
-logger.info(f"[Commit] {commit_result}")
-await signal_ui("Loop complete")
-return ctx
-```
+        commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
+        logger.info(f"[Commit] {commit_result}")
+        await signal_ui("Loop complete")
+        return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-return {"status": "ok"}
+    return {"status": "ok"}
 
 @app.get("/status")
 def status():
-return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
+    return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
 @app.post("/chat")
 async def chat(request: Request):
-try:
-body    = await request.json()
-trigger = body.get("input", "").strip()
-if not trigger:
-return {"ok": False, "error": "No input provided"}
-output = await run_autonomous_loop(trigger)
-return {"ok": True, "output": output}
-except Exception as e:
-logger.error(f"[Chat] Error: {e}", exc_info=True)
-return {"ok": False, "error": str(e)}
+    try:
+        body    = await request.json()
+        trigger = body.get("input", "").strip()
+        if not trigger:
+            return {"ok": False, "error": "No input provided"}
+        output = await run_autonomous_loop(trigger)
+        return {"ok": True, "output": output}
+    except Exception as e:
+        logger.error(f"[Chat] Error: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
 
 @app.post("/deploy")
 async def deploy(request: Request):
-body    = await request.json()
-trigger = body.get("input", "Manual Trigger via /deploy")
-asyncio.create_task(run_autonomous_loop(trigger))
-return {"status": "Agent loop started", "trigger": trigger}
+    body    = await request.json()
+    trigger = body.get("input", "Manual Trigger via /deploy")
+    asyncio.create_task(run_autonomous_loop(trigger))
+    return {"status": "Agent loop started", "trigger": trigger}
 
 # ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
 
 @app.api_route("/{full_path:path}", methods=["POST"])
 async def catch_all_post(full_path: str, request: Request):
-try:
-body = await request.json()
-except Exception:
-body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
 
-```
+
 trigger = (
     body.get("input")
     or body.get("message")
@@ -527,4 +523,4 @@ trigger = (
 logger.info(f"[Catch-All] /{full_path} → trigger: {trigger[:80]}")
 asyncio.create_task(run_autonomous_loop(trigger))
 return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
-```
+
