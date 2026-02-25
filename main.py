@@ -38,7 +38,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 # FIX FLOW-2: evict IPs whose last hit is older than 2× the window
     stale = [k for k, v in RATE_STORE.items() if v and now - v[-1] > RATE_WINDOW * 2]
     for k in stale:
-    del RATE_STORE[k]
+        del RATE_STORE[k]
     return await call_next(request)
 
 # ─── MIDDLEWARE: Error Handler ────────────────────────────────────────────────
