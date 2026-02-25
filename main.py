@@ -1,4 +1,4 @@
-import os, json, base64, time, asyncio, logging
+import os, json, base64, time, asyncio, logging, subprocess, sys
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,6 +104,12 @@ def fn_7_mut(p="", **kwargs):
     STATE["rules"] = new_rules.strip()
     return "Core Rules Redefined"
 
+JSON_ENFORCEMENT = (
+    " Always respond with a single valid JSON object only — "
+    "no markdown, no prose, no code fences. "
+    'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
+)
+
 async def fn_commit(path, content, msg):
     try:
         if not T:
@@ -137,10 +143,174 @@ async def fn_commit(path, content, msg):
         logger.error(f"[Commit] Exception: {e}", exc_info=True)
         return "Save_Failed"
 
+# ─── LANGCHAIN BOOTSTRAP ─────────────────────────────────────────────────────
+
+def _ensure_pkg(pkg, import_as=None):
+    """Install a package at runtime if missing."""
+    name = import_as or pkg.split("[")[0]
+    try:
+        __import__(name)
+    except ImportError:
+        logger.info(f"[Bootstrap] Installing {pkg}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
+
+def fn_8_pip(package="", **kwargs):
+    """Install a Python package so it can be used in future tool calls."""
+    pkg = package or kwargs.get("pkg", "")
+    if not pkg:
+        return "pip_err: no package name"
+    try:
+        _ensure_pkg(pkg)
+        return f"Installed: {pkg}"
+    except Exception as e:
+        logger.error(f"[pip] {e}")
+        return f"pip_err: {e}"
+
+def fn_9_lc_tool(tool="", input="", **kwargs):
+    """Run a LangChain community tool by name (e.g. 'ddg-search', 'wikipedia')."""
+    tool = tool or kwargs.get("name", "")
+    inp  = input or kwargs.get("query", "") or kwargs.get("input", "")
+    if not tool or not inp:
+        return "lc_err: need tool and input"
+    try:
+        _ensure_pkg("langchain-community", "langchain_community")
+        _ensure_pkg("duckduckgo-search",   "duckduckgo_search")
+        if tool in ("ddg-search", "search", "web"):
+            from langchain_community.tools import DuckDuckGoSearchRun
+            return DuckDuckGoSearchRun().run(inp)[:1500]
+        if tool in ("wikipedia", "wiki"):
+            _ensure_pkg("wikipedia", "wikipedia")
+            from langchain_community.tools import WikipediaQueryRun
+            from langchain_community.utilities import WikipediaAPIWrapper
+            return WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()).run(inp)[:1500]
+        return f"lc_err: unknown tool '{tool}'"
+    except Exception as e:
+        logger.error(f"[lc_tool] {e}", exc_info=True)
+        return f"lc_err: {e}"
+
+# ─── GITHUB FILE READER ───────────────────────────────────────────────────────
+
+async def fn_read_github(path="", **kwargs):
+    """Read any file from the repo. Use path='agents.md' or path='main.py'."""
+    path = path or kwargs.get("file", "")
+    if not path:
+        return "read_err: no path"
+    if not T or not R:
+        return "read_err: missing GH_TOKEN or REPO_PATH"
+    try:
+        headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{R}/contents/{path}",
+                headers=headers, timeout=15.0
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                return f"read_err: {resp.status_code} {data.get('message','')}"
+            content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+            logger.info(f"[ReadGitHub] {path} ({len(content)} chars)")
+            return content[:6000]
+    except Exception as e:
+        logger.error(f"[ReadGitHub] {e}", exc_info=True)
+        return f"read_err: {e}"
+
+# ─── SELF-PATCH TOOLS ─────────────────────────────────────────────────────────
+
+async def fn_propose_patch(instruction="", **kwargs):
+    """Ask the LLM to generate a targeted code patch aligning main.py with agents.md."""
+    instruction = instruction or kwargs.get("desc", "")
+    if not instruction:
+        return "patch_err: no instruction"
+    current_code = await fn_read_github("main.py")
+    agents_spec  = await fn_read_github("agents.md")
+    if "read_err" in current_code:
+        return f"patch_err: could not read main.py — {current_code}"
+    if "read_err" in agents_spec:
+        return f"patch_err: could not read agents.md — {agents_spec}"
+
+    prompt = (
+        f"You are a Python engineer. Here is the agents.md specification:\n{agents_spec[:2000]}\n\n"
+        f"Here is the current main.py (truncated):\n{current_code[:3000]}\n\n"
+        f"Instruction: {instruction}\n\n"
+        "Write ONLY the complete updated main.py Python source code. "
+        "No explanation, no markdown fences, just raw Python."
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                json={
+                    "model": "groq/compound",
+                    "messages": [
+                        {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "max_tokens": 4096
+                },
+                timeout=60.0
+            )
+        proposed = resp.json()["choices"][0]["message"]["content"].strip()
+        if proposed.startswith("```"):
+            proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
+        result = await fn_commit("main_proposed.py", proposed, f"[AutoPatch] {instruction[:80]}")
+        logger.info(f"[ProposePatch] {result}")
+        return f"Proposed patch committed as main_proposed.py — {result}"
+    except Exception as e:
+        logger.error(f"[ProposePatch] {e}", exc_info=True)
+        return f"patch_err: {e}"
+
+async def fn_apply_patch(**kwargs):
+    """Promote main_proposed.py → main.py on GitHub after review."""
+    proposed = await fn_read_github("main_proposed.py")
+    if "read_err" in proposed:
+        return f"apply_err: {proposed}"
+    if "FastAPI" not in proposed or "async def" not in proposed:
+        return "apply_err: proposed file failed sanity check (missing FastAPI or async def)"
+    result = await fn_commit("main.py", proposed, "[AutoApply] Promote main_proposed.py → main.py")
+    logger.info(f"[ApplyPatch] {result}")
+    return f"main.py updated from proposal — {result}"
+
+async def fn_align_with_spec(**kwargs):
+    """Read agents.md, compare with current capabilities, log gaps, propose patch."""
+    agents_spec = await fn_read_github("agents.md")
+    if "read_err" in agents_spec:
+        logger.warning(f"[Align] Could not read agents.md: {agents_spec}")
+        return f"align_skipped: {agents_spec}"
+    current_code = await fn_read_github("main.py")
+    gap_prompt = (
+        f"agents.md specification:\n{agents_spec[:2000]}\n\n"
+        f"Current main.py (truncated):\n{current_code[:2000]}\n\n"
+        "In one sentence, what is the single most important capability in agents.md "
+        "that is missing or incomplete in main.py right now?"
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                json={
+                    "model": "groq/compound",
+                    "messages": [{"role": "user", "content": gap_prompt}],
+                    "max_tokens": 200
+                },
+                timeout=30.0
+            )
+        gap = resp.json()["choices"][0]["message"]["content"].strip()
+        logger.info(f"[Align] Gap identified: {gap}")
+        patch_result = await fn_propose_patch(instruction=gap)
+        return f"Gap: {gap} | {patch_result}"
+    except Exception as e:
+        logger.error(f"[Align] {e}", exc_info=True)
+        return f"align_err: {e}"
+
 TOOLS = {
     "env": fn_1_env, "log": fn_2_log, "math": fn_3_math,
     "fmt": fn_4_fmt, "chk": fn_5_chk, "ui": fn_6_ui,
-    "mut": fn_7_mut, "commit": fn_commit
+    "mut": fn_7_mut, "commit": fn_commit,
+    "pip": fn_8_pip, "lc": fn_9_lc_tool,
+    "read": fn_read_github, "propose_patch": fn_propose_patch,
+    "apply_patch": fn_apply_patch, "align": fn_align_with_spec
 }
 
 PRMPTS = [
@@ -149,6 +319,7 @@ PRMPTS = [
     "Identify the single most critical failure point in the previous step. You MUST call tool='fmt' with args={'d': '<failure point in one sentence>'}.",
     "Rewrite the current ruleset to prevent premature task exit. You MUST call tool='mut' with args={'p': '<your new ruleset as a single string>'}.",
     "Log a one-sentence final verification summary. You MUST call tool='log' with args={'m': '<verification summary>'}.",
+    "Compare current code against agents.md spec and propose alignment improvements. You MUST call tool='align' with args={}."
 ]
 
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
@@ -172,7 +343,7 @@ SYSTEM_PROMPT_TEMPLATE = (
     "no markdown, no prose, no code fences. "
     "Your entire response must be parseable by json.loads(). "
     "Schema: {{\"tool\": \"<name>\", \"args\": {{}}, \"thought\": \"<reasoning>\"}}. "
-    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), commit(path,content,msg). "
+    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), pip(package), lc(tool,input), read(path), propose_patch(instruction), apply_patch(), align(). "
     "Use exactly these argument names. Do not add extra fields."
 )
 
@@ -212,7 +383,7 @@ async def call_llm(p) -> str:
                     json={
                         "model": "groq/compound",
                         "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"])},
+                            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"]) + JSON_ENFORCEMENT},
                             {"role": "user", "content": p}
                         ],
                         "response_format": {"type": "json_object"}
@@ -248,7 +419,7 @@ async def call_llm(p) -> str:
 
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
-    for i in range(5):
+    for i in range(6):
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
         raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
