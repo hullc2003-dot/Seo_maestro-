@@ -163,7 +163,7 @@ now = time.time()
     try:
         c = http.client.HTTPSConnection("api.groq.com")
         body = json.dumps({
-            "model": "compound-beta",
+            "model": "groq/compound",
             "messages": [
                 {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
                 {"role": "user", "content": p}
