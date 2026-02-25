@@ -30,8 +30,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 
 RATE_STORE: dict[str, list[float]] = {}
-RATE_LIMIT  = int(os.getenv("RATE_LIMIT", 20))
-RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))
+RATE_LIMIT  = int(os.getenv("RATE_LIMIT", 18))
+RATE_WINDOW = int(os.getenv("RATE_WINDOW", 65))
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
