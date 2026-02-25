@@ -15,6 +15,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
         logger.info(f"→ {request.method} {request.url.path} | Client: {request.client.host}")
+        # 
         response = await call_next(request)
         elapsed = (time.perf_counter() - start) * 1000
         logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
@@ -73,10 +74,20 @@ T = os.getenv("GH_TOKEN")
 R = os.getenv("REPO_PATH")
 STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
 
+# ─── CONTEXT TRUNCATION LIMIT (chars) — prevents Groq 413 errors ─────────────
+
+CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
+
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
 
 def fn_1_env(k): return os.getenv(k, "Null")
-def fn_2_log(m): logger.info(f"[Reflect]: {m}"); return "Log recorded"
+
+# FIX 1: default m=None and **kwargs absorb unknown keyword args the LLM may send
+
+def fn_2_log(m=None, **kwargs):
+    msg = m or json.dumps(kwargs) or "Log recorded"
+    logger.info(f"[Reflect]: {msg}")
+    return "Log recorded"
 
 # FIX 3: replaced eval with simpleeval to prevent code execution via user input
 
@@ -142,6 +153,19 @@ GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
 
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
+# FIX 3: Strengthened system prompt to enforce JSON-only output and document
+# the exact allowed tool names + arg schema so the LLM doesn’t invent fields.
+
+SYSTEM_PROMPT_TEMPLATE = (
+    "{rules}. "
+    "You MUST respond with a single valid JSON object and nothing else — "
+    "no markdown, no prose, no code fences. "
+    "Your entire response must be parseable by json.loads(). "
+    "Schema: {{\"tool\": \"<name>\", \"args\": {{}}, \"thought\": \"<reasoning>\"}}. "
+    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), commit(path,content,msg). "
+    "Use exactly these argument names. Do not add extra fields."
+)
+
 async def call_llm(p) -> str:
     async with GROQ_SEMAPHORE:
         now = time.time()
@@ -184,7 +208,7 @@ async def call_llm(p) -> str:
                     json={
                         "model": "groq/compound",
                         "messages": [
-                            {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
+                            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"])},
                             {"role": "user", "content": p}
                         ],
                         "response_format": {"type": "json_object"}
@@ -221,7 +245,10 @@ async def call_llm(p) -> str:
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(5):
-        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx}. Directive: {PRMPTS[i % 5]}")
+        # FIX 4: truncate ctx before sending to prevent Groq 413 errors
+        ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
+
+        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
         if not raw:
             logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
@@ -234,6 +261,13 @@ async def run_autonomous_loop(input_str: str) -> str:
             continue
 
         t, a = data.get("tool"), data.get("args", {})
+
+        # FIX 5: skip cleanly when LLM emits tool="none" or omits tool entirely
+        if not t or t.lower() == "none":
+            logger.info(f"[Loop] Step {i}: LLM chose no tool — skipping")
+            ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
+            continue
+
         if t in TOOLS:
             try:
                 res = TOOLS[t](**a)
