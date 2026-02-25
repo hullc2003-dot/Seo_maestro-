@@ -97,32 +97,28 @@ async with httpx.AsyncClient() as client:resp = await client.post(CONTACT_UI_URL
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
 def fn_2_log(m=None, **kwargs):
-msg = m or json.dumps(kwargs) or "Log recorded"
-logger.info(f"[Reflect]: {msg}")
+    msg = m or json.dumps(kwargs) or "Log recorded"
+    logger.info(f"[Reflect]: {msg}")
 return "Log recorded"
 
 # FIX FLOW-3: accept both 'e' and common aliases so the LLM isn't brittle
 
 def fn_3_math(e=None, expression=None, expr=None, **kwargs):
-formula = e or expression or expr or ""
-if not formula:
+    formula = e or expression or expr or ""
+    if not formula:
 return "Math Err: no expression"
-try:
-from simpleeval import simple_eval
-return simple_eval(formula)
-except Exception:
+    try:
+    from simpleeval import simple_eval
+return simple_eval(formula)except Exception:
 return "Math Err"
 
 def fn_4_fmt(d="", **kwargs): return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
 def fn_5_chk(g="", **kwargs): return f"Goal Alignment: {g or json.dumps(kwargs)}"
 def fn_6_ui(d="",  **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 
-def fn_7_mut(p="", **kwargs):
-new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
-if not new_rules or not new_rules.strip():
-logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
-return "Mut rejected: empty ruleset"
-STATE["rules"] = new_rules.strip()
+def fn_7_mut(p="", **kwargs):new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
+if not new_rules or not new_rules.strip():logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
+return "Mut rejected: empty ruleset"STATE["rules"] = new_rules.strip()
 return "Core Rules Redefined"
 
 JSON_ENFORCEMENT = (
@@ -134,31 +130,19 @@ JSON_ENFORCEMENT = (
 # ─── GITHUB COMMIT ────────────────────────────────────────────────────────────
 
 async def fn_commit(path, content, msg):
-try:
-if not T:
-logger.error("[Commit] GH_TOKEN env var is not set")
+    try:
+    if not T:logger.error("[Commit] GH_TOKEN env var is not set")
 return "Save_Failed: no GH_TOKEN"
-if not R:
-logger.error("[Commit] REPO_PATH env var is not set")
-return "Save_Failed: no REPO_PATH"
-headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
-async with httpx.AsyncClient() as client:
-get_resp = await client.get(
-f"https://api.github.com/repos/{R}/contents/{path}",
-headers=headers
-)
-get_data = get_resp.json()
-if get_resp.status_code not in (200, 404):
-logger.error(f"[Commit] GET failed {get_resp.status_code}: {get_data}")
+    if not R:logger.error("[Commit] REPO_PATH env var is not set")
+return "Save_Failed: no REPO_PATH"headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+async with httpx.AsyncClient() as client:get_resp = await client.get(
+    f"https://api.github.com/repos/{R}/contents/{path}",headers=headers)get_data = get_resp.json()
+    if get_resp.status_code not in (200, 404):logger.error(f"[Commit] GET failed {get_resp.status_code}: {get_data}")
 return f"Save_Failed: GET {get_resp.status_code}"
-sha = get_data.get("sha", "")
-put_resp = await client.put(
-f"https://api.github.com/repos/{R}/contents/{path}",
-headers=headers,
-json={
-"message": msg,
-"content": base64.b64encode(content.encode()).decode(),
-"sha": sha,
+    sha = get_data.get("sha", "")
+    put_resp = await client.put(
+    f"https://api.github.com/repos/{R}/contents/{path}",headers=headers,
+    json={"message": msg,"content": base64.b64encode(content.encode()).decode(),"sha": sha,
 },
 )
 put_data = put_resp.json()
