@@ -157,7 +157,7 @@ def _ensure_pkg(pkg, import_as=None):
 """Install a package at runtime if missing."""
 name = import_as or pkg.split("[")[0]
 try:
-**import**(name)
+import(name)
 except ImportError:
 logger.info(f"[Bootstrap] Installing {pkg}…")
 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "–quiet"])
