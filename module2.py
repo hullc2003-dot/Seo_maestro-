@@ -11,10 +11,12 @@ import os
 import ast
 import re
 import tempfile
+from typing import Dict, Any, Callable
 
 from module1 import K, T, R, STATE, CTX_MAX_CHARS, signal_ui, logger
 
-def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
+def fn_1_env(k="", **kwargs): 
+    return os.getenv(k, "Null")
 
 def fn_2_log(m=None, **kwargs):
     msg = m or json.dumps(kwargs) or "Log recorded"
@@ -31,7 +33,8 @@ def fn_3_math(e=None, expression=None, expr=None, **kwargs):
     except Exception:
         return "Math Err"
 
-def fn_4_fmt(d="", **kwargs): return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
+def fn_4_fmt(d="", **kwargs): 
+    return f"### ANALYSIS ###\n{d or json.dumps(kwargs)}"
 
 def fn_5_chk(threshold: float = 0.8) -> bool:
     try:
@@ -41,7 +44,8 @@ def fn_5_chk(threshold: float = 0.8) -> bool:
         logger.exception("[fn_5_chk] Alignment check failed")
         return False
 
-def fn_6_ui(d="", **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
+def fn_6_ui(d="", **kwargs): 
+    return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 
 def fn_7_mut(new_rule: str) -> None:
     global operational_rules
@@ -217,16 +221,17 @@ async def fn_align_with_spec(**kwargs):
             rdata = resp.json()
             if "choices" not in rdata:
                 return f"align_partial: {rdata.get('error', rdata)}"
-                gap = rdata["choices"][0]["message"]["content"].strip()
-                logger.info(f"[Align] Gap: {gap}")
+            
+            gap = rdata["choices"][0]["message"]["content"].strip()
+            logger.info(f"[Align] Gap: {gap}")
+            
             await asyncio.sleep(10)
-                patch_result = await fn_propose_patch(instruction=gap)
-                return f"Gap: {gap} | {patch_result}"
-            except Exception as e:
-                return f"align_err: {e}"
+            patch_result = await fn_propose_patch(instruction=gap)
+            return f"Gap: {gap} | {patch_result}"
+    except Exception as e:
+        return f"align_err: {e}"
 
-def fn_auto_gen_code
-
+async def fn_auto_code_gen():
     def _render_template(req: Dict) -> str:
         """Create a simple function based on a high‑level requirement."""
         name = req.get("func", "generated_func")
@@ -237,7 +242,7 @@ def fn_auto_gen_code
 
     def generate_code(requirements: Dict) -> str:
         """Generate Python source code from a requirement dict."""
-    # Very basic templating – can be expanded with LLM calls later.
+        # Very basic templating – can be expanded with LLM calls later.
         return _render_template(requirements)
 
     def _load_function(code: str, func_name: str) -> Callable:
@@ -250,7 +255,7 @@ def fn_auto_gen_code
         """Run supplied test cases against the generated function."""
         tests = requirements.get("tests", [])
         if not tests:
-        return True  # No tests to run
+            return True  # No tests to run
         func_name = requirements.get("func", "generated_func")
         try:
             func = _load_function(code, func_name)
@@ -259,33 +264,33 @@ def fn_auto_gen_code
         for case in tests:
             args = case.get("args", [])
             expected = case.get("expected")
-        try:
-            result = func(*args)
-        except Exception:
-            return False
-        if result != expected:
-            return False
-            return True
+            try:
+                result = func(*args)
+                if result != expected:
+                    return False
+            except Exception:
+                return False
+        return True
 
     def validate_code(code: str, requirements: Dict) -> bool:
-          """Validate that the generated code meets structural requirements."""
-          # Example: ensure required function name exists
-          required_name = requirements.get("func")
-          if required_name and f"def {required_name}(" not in code:
-          return False
-          return True
+        """Validate that the generated code meets structural requirements."""
+        # Example: ensure required function name exists
+        required_name = requirements.get("func")
+        if required_name and f"def {required_name}(" not in code:
+            return False
+        return True
 
-    def autonomous_code_dev(requirements: Dict) -> str:
+    async def autonomous_code_dev(requirements: Dict) -> str:
         """Generate, test, and validate code autonomously."""
-         code = generate_code(requirements)
+        code = generate_code(requirements)
         if not test_code(code, requirements):
             return "Testing failed"
         if not validate_code(code, requirements):
             return "Validation failed"
         return code
 
-    def main():
-    # Example high‑level requirement
+    async def main():
+        # Example high‑level requirement
         req = {
             "func": "add",
             "params": ["a", "b"],
@@ -293,12 +298,12 @@ def fn_auto_gen_code
             "tests": [
                 {"args": [1, 2], "expected": 3},
                 {"args": [-1, 5], "expected": 4}
-        ]
-    }
+            ]
+        }
         result = await autonomous_code_dev(req)
         print(result)
 
-    asyncio.run(main())
+    await main()
 
 
 async def fn_create_module(filename="", code="", description="", **kwargs):
@@ -432,16 +437,16 @@ async def fn_run_tests(filename="", **kwargs):
                     f"https://api.github.com/repos/{R}/contents/tests",
                     headers=headers, timeout=15.0,
                 )
-            if resp.status_code != 200:
-                return f"test_run_err: HTTP {resp.status_code} listing tests/"
-            files_to_fetch = [
-                item["path"] for item in resp.json()
-                if item.get("type") == "file"
-                and item["name"].startswith("test_")
-                and item["name"].endswith(".py")
-            ]
-            if not files_to_fetch:
-                return "test_run_err: no test_*.py files in tests/"
+                if resp.status_code != 200:
+                    return f"test_run_err: HTTP {resp.status_code} listing tests/"
+                files_to_fetch = [
+                    item["path"] for item in resp.json()
+                    if item.get("type") == "file"
+                    and item["name"].startswith("test_")
+                    and item["name"].endswith(".py")
+                ]
+                if not files_to_fetch:
+                    return "test_run_err: no test_*.py files in tests/"
         except Exception as exc:
             return f"test_run_err: {exc}"
 
@@ -504,7 +509,7 @@ async def reload_prompts_from_agents_md() -> bool:
     other_steps = [p for p in parsed if "align" not in p.lower()]
     if not align_steps:
         align_steps = [ALIGN_DIRECTIVE]
-    PRMPTS = other_steps + align_steps
+    PRMPTS[:] = other_steps + align_steps
     logger.info(f"[Prompts] Loaded {len(PRMPTS)} steps from agents.md")
     return True
 
@@ -531,27 +536,27 @@ async def fn_reload_prompts(**kwargs):
     return f"prompts_reloaded: {len(PRMPTS)} steps | from_agents_md={updated}"
 
 TOOLS: dict = {
-    "env":           fn_1_env,
-    "log":           fn_2_log,
-    "math":          fn_3_math,
-    "fmt":           fn_4_fmt,
-    "chk":           fn_5_chk,
-    "ui":            fn_6_ui,
-    "mut":           fn_7_mut,
-    "commit":        fn_commit,
-    "pip":           fn_8_pip,
-    "lc":            fn_9_lc_tool,
-    "read":          fn_read_github,
-    "propose_patch": fn_propose_patch,
-    "apply_patch":   fn_apply_patch,
-    "align":         fn_align_with_spec,
-    "auto_code_gen": fn_auto_code_gen   
-    "create_module": fn_create_module,
-    "add_tool":      fn_add_tool,
-    "add_step":      fn_add_step,
-    "list_tools":    fn_list_tools,
-    "list_steps":    fn_list_steps,
-    "reload_prompts":  fn_reload_prompts,
-    "create_test":     fn_create_test,
-    "run_tests":       fn_run_tests,
+    "env":            fn_1_env,
+    "log":            fn_2_log,
+    "math":           fn_3_math,
+    "fmt":            fn_4_fmt,
+    "chk":            fn_5_chk,
+    "ui":             fn_6_ui,
+    "mut":            fn_7_mut,
+    "commit":         fn_commit,
+    "pip":            fn_8_pip,
+    "lc":             fn_9_lc_tool,
+    "read":           fn_read_github,
+    "propose_patch":  fn_propose_patch,
+    "apply_patch":    fn_apply_patch,
+    "align":          fn_align_with_spec,
+    "auto_code_gen":  fn_auto_code_gen,
+    "create_module":  fn_create_module,
+    "add_tool":       fn_add_tool,
+    "add_step":       fn_add_step,
+    "list_tools":     fn_list_tools,
+    "list_steps":     fn_list_steps,
+    "reload_prompts": fn_reload_prompts,
+    "create_test":    fn_create_test,
+    "run_tests":      fn_run_tests,
 }
