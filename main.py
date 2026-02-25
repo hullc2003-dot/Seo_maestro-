@@ -12,13 +12,13 @@ logger = logging.getLogger("AgentServer")
 # ─── MIDDLEWARE: Request Logger ───────────────────────────────────────────────
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-async def dispatch(self, request: Request, call_next):
-start = time.perf_counter()
-logger.info(f"→ {request.method} {request.url.path} | Client: {request.client.host}")
-response = await call_next(request)
-elapsed = (time.perf_counter() - start) * 1000
-logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
-return response
+    async def dispatch(self, request: Request, call_next):
+    start = time.perf_counter()
+    logger.info(f"→ {request.method} {request.url.path} | Client: {request.client.host}")
+    response = await call_next(request)
+    elapsed = (time.perf_counter() - start) * 1000
+    logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
+    return response
 
 # ─── MIDDLEWARE: Rate Limiter (per IP, in-memory) ─────────────────────────────
 
@@ -27,29 +27,29 @@ RATE_LIMIT  = int(os.getenv("RATE_LIMIT",  20))   # requests
 RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))   # seconds
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-async def dispatch(self, request: Request, call_next):
-ip  = request.client.host
-now = time.time()
-hits = [t for t in RATE_STORE.get(ip, []) if now - t < RATE_WINDOW]
-if len(hits) >= RATE_LIMIT:
-return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
-hits.append(now)
-RATE_STORE[ip] = hits
+    async def dispatch(self, request: Request, call_next):
+    ip  = request.client.host
+    now = time.time()
+    hits = [t for t in RATE_STORE.get(ip, []) if now - t < RATE_WINDOW]
+    if len(hits) >= RATE_LIMIT:
+    return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+    hits.append(now)
+    RATE_STORE[ip] = hits
 # FIX FLOW-2: evict IPs whose last hit is older than 2× the window
-stale = [k for k, v in RATE_STORE.items() if v and now - v[-1] > RATE_WINDOW * 2]
-for k in stale:
-del RATE_STORE[k]
-return await call_next(request)
+    stale = [k for k, v in RATE_STORE.items() if v and now - v[-1] > RATE_WINDOW * 2]
+    for k in stale:
+    del RATE_STORE[k]
+    return await call_next(request)
 
 # ─── MIDDLEWARE: Error Handler ────────────────────────────────────────────────
 
 class ErrorHandlerMiddleware(BaseHTTPMiddleware):
-async def dispatch(self, request: Request, call_next):
-try:
-return await call_next(request)
-except Exception as exc:
-logger.error(f"Unhandled exception: {exc}", exc_info=True)
-return JSONResponse({"error": "Internal server error", "detail": str(exc)}, status_code=500)
+    async def dispatch(self, request: Request, call_next):
+    try:
+    return await call_next(request)
+    except Exception as exc:
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse({"error": "Internal server error", "detail": str(exc)}, status_code=500)
 
 app = FastAPI(title="Autonomous Agent", version="2.0")
 
