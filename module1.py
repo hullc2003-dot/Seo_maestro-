@@ -121,7 +121,7 @@ SYSTEM_PROMPT_TEMPLATE = (
 OPENROUTER_LOCK = asyncio.Lock()
 OPENROUTER_SEMAPHORE = asyncio.Semaphore(3)
 OPENROUTER_CALL_TIMES: list[float] = []
-OPENROUTER_RPM_LIMIT = int(os.getenv("OPENROUTER_RPM_LIMIT", 40))
+OPENROUTER_RPM_LIMIT = int(os.getenv("OPENROUTER_RPM_LIMIT", 18))
 
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
@@ -139,7 +139,7 @@ async def call_llm(prompt: str) -> str:
             ]
 
             if len(OPENROUTER_CALL_TIMES) >= OPENROUTER_RPM_LIMIT:
-                wait = 60 - (now - OPENROUTER_CALL_TIMES[0])
+                wait = 65 - (now - OPENROUTER_CALL_TIMES[0])
                 logger.warning(f"[OpenRouter] RPM cap – waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
 
@@ -169,7 +169,7 @@ async def call_llm(prompt: str) -> str:
                         "max_tokens": 512,
                         "response_format": {"type": "json_object"},
                     },
-                    timeout=30.0,
+                    timeout=75.0,
                 )
 
                 resp = response.json()
