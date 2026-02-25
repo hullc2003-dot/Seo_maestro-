@@ -81,14 +81,10 @@ CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
-# FIX 1: default m=None and **kwargs absorb unknown keyword args the LLM may send
-
 def fn_2_log(m=None, **kwargs):
     msg = m or json.dumps(kwargs) or "Log recorded"
     logger.info(f"[Reflect]: {msg}")
     return "Log recorded"
-
-# FIX 3: replaced eval with simpleeval to prevent code execution via user input
 
 def fn_3_math(e):
     try:
@@ -113,8 +109,6 @@ JSON_ENFORCEMENT = (
     "no markdown, no prose, no code fences. "
     'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
 )
-
-# FIX 2: replaced blocking http.client with async httpx
 
 async def fn_commit(path, content, msg):
     try:
@@ -144,7 +138,9 @@ async def fn_commit(path, content, msg):
             if put_resp.status_code not in (200, 201):
                 logger.error(f"[Commit] PUT failed {put_resp.status_code}: {put_data}")
                 return f"Save_Failed: PUT {put_resp.status_code}"
-            return f"Saved_{put_resp.status_code}"
+            saved = f"Saved_{put_resp.status_code}"
+            asyncio.ensure_future(signal_ui(f"Committed {path}"))
+            return saved
     except Exception as e:
         logger.error(f"[Commit] Exception: {e}", exc_info=True)
         return "Save_Failed"
@@ -215,7 +211,7 @@ async def fn_read_github(path="", **kwargs):
                 return f"read_err: {resp.status_code} {data.get('message','')}"
             content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
             logger.info(f"[ReadGitHub] {path} ({len(content)} chars)")
-            return content[:6000]  # cap to avoid ctx explosion
+            return content[:6000]
     except Exception as e:
         logger.error(f"[ReadGitHub] {e}", exc_info=True)
         return f"read_err: {e}"
@@ -223,12 +219,10 @@ async def fn_read_github(path="", **kwargs):
 # ─── SELF-PATCH TOOLS ─────────────────────────────────────────────────────────
 
 async def fn_propose_patch(instruction="", **kwargs):
-    """Ask the LLM to generate a targeted code patch aligning main.py with agents.md.
-    Writes result to main_proposed.py on GitHub for review before applying."""
+    """Ask the LLM to generate a targeted code patch aligning main.py with agents.md."""
     instruction = instruction or kwargs.get("desc", "")
     if not instruction:
         return "patch_err: no instruction"
-    # read current main.py and agents.md from GitHub
     current_code = await fn_read_github("main.py")
     agents_spec  = await fn_read_github("agents.md")
     if "read_err" in current_code:
@@ -270,8 +264,6 @@ async def fn_propose_patch(instruction="", **kwargs):
         if proposed.startswith("```"):
             proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
         result = await fn_commit("main_patch.py", proposed, f"[AutoPatch] {instruction[:80]}")
-        logger.info(f"[ProposePatch] Patch saved to main_patch.py — review before applying")
-        logger.info(f"[ProposePatch] {result}")
         return f"Proposed patch committed as main_proposed.py — {result}"
     except Exception as e:
         logger.error(f"[ProposePatch] {e}", exc_info=True)
@@ -287,25 +279,25 @@ async def fn_apply_patch(**kwargs):
     current = await fn_read_github("main.py")
     if "read_err" in current:
         return f"apply_err: could not read main.py — {current}"
-    # Append patch before the catch-all route (last route) so it's valid Python
-    insert_marker = "# ─── CATCH-ALL POST"
+    
+    insert_marker = "# --- PATCH: Contact UI signaling ---"
+    
     if insert_marker in current:
         updated = current.replace(insert_marker, patch.strip() + "\n\n\n" + insert_marker, 1)
     else:
         updated = current + "\n\n" + patch.strip()
+    
     if "FastAPI" not in updated or "async def run_autonomous_loop" not in updated:
         return "apply_err: merged file failed sanity check — autonomous loop missing"
+    
     result = await fn_commit("main.py", updated, f"[AutoApply] Append patch to main.py")
-    logger.info(f"[ApplyPatch] {result}")
     return f"main.py patched — {result}"
 
 # ─── AGENTS.MD ALIGNMENT STEP ────────────────────────────────────────────────
 
 async def fn_align_with_spec(**kwargs):
-    """Read agents.md, compare with current capabilities, log gaps, propose patch."""
     agents_spec = await fn_read_github("agents.md")
     if "read_err" in agents_spec:
-        logger.warning(f"[Align] Could not read agents.md: {agents_spec}")
         return f"align_skipped: {agents_spec}"
     current_code = await fn_read_github("main.py")
     gap_prompt = (
@@ -315,7 +307,7 @@ async def fn_align_with_spec(**kwargs):
         "that is missing or incomplete in main.py right now?"
     )
     try:
-        await asyncio.sleep(8)  # wait for TPM window to recover after 6-call loop
+        await asyncio.sleep(8)
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -330,14 +322,10 @@ async def fn_align_with_spec(**kwargs):
         rdata = resp.json()
         if "choices" not in rdata:
             err = rdata.get("error", rdata)
-            logger.error(f"[Align] Groq gap-call failed: {err}")
-            # Still log the gap we can infer from agents_spec alone
-            gap = "agents.md exists but gap LLM call failed — retrying next loop"
-            fn_2_log(m=f"[Align] {gap}")
+            fn_2_log(m=f"[Align] agents.md exists but gap LLM call failed")
             return f"align_partial: {err}"
         gap = rdata["choices"][0]["message"]["content"].strip()
-        logger.info(f"[Align] Gap identified: {gap}")
-        await asyncio.sleep(10)  # let TPM window recover before propose_patch
+        await asyncio.sleep(10)
         patch_result = await fn_propose_patch(instruction=gap)
         return f"Gap: {gap} | {patch_result}"
     except Exception as e:
@@ -365,28 +353,24 @@ PRMPTS = [
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
 
 GROQ_SEMAPHORE = asyncio.Semaphore(3)
+GROQ_CALL_TIMES = []
+GROQ_TOKEN_LOG = []
+GROQ_DAY_CALLS = []
 
-GROQ_CALL_TIMES: list[float] = []
-GROQ_TOKEN_LOG: list[tuple[float, int]] = []   # (timestamp, tokens_used)
-GROQ_DAY_CALLS: list[float] = []               # timestamps for RPD tracking
-
-GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))      # requests/min
-GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28000))  # tokens/min
-GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
+GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))
+GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28000))
+GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
-
-# FIX 3: Strengthened system prompt to enforce JSON-only output and document
-# the exact allowed tool names + arg schema so the LLM doesn’t invent fields.
 
 SYSTEM_PROMPT_TEMPLATE = (
     "{rules}. "
     "You MUST respond with a single valid JSON object and nothing else — "
     "no markdown, no prose, no code fences. "
     "Your entire response must be parseable by json.loads(). "
-    "Schema: {{\"tool\": \"<name>\", \"args\": {{}}, \"thought\": \"<reasoning>\"}}. "
+    'Schema: {"tool": "<name>", "args": {}, "thought": "<reasoning>"}. '
     "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), pip(package), lc(tool,input), read(path), propose_patch(instruction), apply_patch(), align(). "
     "Use exactly these argument names. Do not add extra fields."
 )
@@ -394,32 +378,23 @@ SYSTEM_PROMPT_TEMPLATE = (
 async def call_llm(p) -> str:
     async with GROQ_SEMAPHORE:
         now = time.time()
-
-        # ── Sliding windows ──────────────────────────────────────────────────
         GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
         GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
-        GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
+        GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86400]
 
-        # ── RPD guard ────────────────────────────────────────────────────────
         if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
-            wait = 86_400 - (now - GROQ_DAY_CALLS[0])
-            logger.warning(f"[Groq throttle] RPD cap hit — waiting {wait:.0f}s (~{wait/3600:.1f}h)")
+            wait = 86400 - (now - GROQ_DAY_CALLS[0])
             await asyncio.sleep(wait)
 
-        # ── RPM guard ────────────────────────────────────────────────────────
         if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
             wait = 60 - (now - GROQ_CALL_TIMES[0])
-            logger.warning(f"[Groq throttle] RPM cap hit — waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
-        # ── TPM guard ────────────────────────────────────────────────────────
         tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
         if tokens_used >= GROQ_TPM_LIMIT:
             wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
-            logger.warning(f"[Groq throttle] TPM cap hit ({tokens_used} used) — waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
-        # ── Register this call ───────────────────────────────────────────────
         ts = time.time()
         GROQ_CALL_TIMES.append(ts)
         GROQ_DAY_CALLS.append(ts)
@@ -443,25 +418,16 @@ async def call_llm(p) -> str:
                 resp = response.json()
 
             if "choices" not in resp:
-                err = resp.get("error", {})
-                if err.get("type") == "permissions_error":
-                    logger.error(f"[Groq] Permissions error — aborting: {err.get('message')}")
-                    raise RuntimeError(f"Groq permissions error: {err.get('message')}")
-                logger.error(f"[Groq] Unexpected response (no 'choices'): {resp}")
                 GROQ_TOKEN_LOG.append((time.time(), 0))
                 return FALLBACK
 
             usage = resp.get("usage", {})
             total_tokens = usage.get("total_tokens", 500)
             GROQ_TOKEN_LOG.append((time.time(), total_tokens))
-            logger.info(f"[Groq] tokens this call: {total_tokens} | TPM window: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
-
             return resp["choices"][0]["message"]["content"]
 
-        except RuntimeError:
-            raise
         except Exception as e:
-            logger.error(f"[Groq] API call failed: {e}", exc_info=True)
+            logger.error(f"[Groq] API call failed: {e}")
             GROQ_TOKEN_LOG.append((time.time(), 500))
             return FALLBACK
 
@@ -470,89 +436,37 @@ async def call_llm(p) -> str:
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
-        # FIX 4: truncate ctx before sending to prevent Groq 413 errors
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
+        raw = await call_llm(f"PRE-STEP REFLECTION. Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
-        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
-
-        if not raw:
-            logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
-            continue
+        if not raw: continue
 
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError) as e:
-            # Fallback: try to extract JSON object from markdown-wrapped response
+        except (json.JSONDecodeError, TypeError):
             import re as _re
             match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                    logger.warning(f"[Loop] Step {i}: extracted JSON from markdown response")
-                except Exception:
-                    data = None
-            else:
-                data = None
-            if not data:
-                # Last resort: if this is the mut step, build a safe default
-                if i == 3:
-                    logger.warning(f"[Loop] Step {i}: mut markdown fallback — extracting ruleset from raw text")
-                    # Truncate raw to first 500 chars as the new ruleset
-                    safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
-                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted from markdown"}
-                else:
-                    logger.error(f"[Loop] Step {i}: failed to parse LLM response: {e} | raw={raw!r}")
-                    continue
+            data = json.loads(match.group()) if match else None
+            if not data: continue
 
         t, a = data.get("tool"), data.get("args", {})
 
-        # Step 4 is reserved exclusively for log — block anything else
-        if i == 4 and t != "log":
-            logger.warning(f"[Loop] Step 4: LLM tried '{t}' — forcing log()")
-            t = "log"
-            a = {"m": f"Verification: steps 0-3 complete. Context summary: {ctx[-150:].replace(chr(10),' ')}"}
+        if i == 4 and t != "log": t, a = "log", {"m": "Verification step forced."}
+        if i == 3 and t != "mut": t, a = "mut", {"p": "Goal: AI Engineer. Strategy: Reflect."}
+        if i == 5 and t != "align": t, a = "align", {}
 
-        # Step 3 is reserved exclusively for mut — block anything else
-        if i == 3 and t != "mut":
-            logger.warning(f"[Loop] Step 3: LLM tried '{t}' — forcing mut()")
-            t = "mut"
-            # build a safe default ruleset from context so mut isn't empty
-            a = {"p": f"Goal: AI Engineer. Prevent premature exit. Require full analysis before termination. Context: {ctx[-200:].replace(chr(10),' ')}"}
-
-        # Step 5 is reserved exclusively for align — block anything else
-        if i == 5 and t != "align":
-            logger.warning(f"[Loop] Step 5: LLM tried '{t}' — forcing align()")
-            t = "align"
-            a = {}
-        if i == 5 and t == "align":
-            logger.info("[Loop] Step 5: running align() against agents.md")
-
-        # FIX 5: skip cleanly when LLM emits tool="none" or omits tool entirely
-        if not t or t.lower() == "none":
-            logger.info(f"[Loop] Step {i}: LLM chose no tool — skipping")
-            ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
-            continue
-
-        # FIX: prevent LLM from invoking commit mid-loop; it runs once after all steps
-        if t == "commit":
-            logger.warning(f"[Loop] Step {i}: LLM tried to call 'commit' mid-loop — blocked")
-            ctx += f"\n[Step {i}] Commit blocked (runs at end) | Reasoning: {data.get('thought')}"
-            continue
+        if not t or t.lower() == "none" or t == "commit": continue
 
         if t in TOOLS:
             try:
                 res = TOOLS[t](**a)
-                if asyncio.iscoroutine(res):
-                    res = await res
+                if asyncio.iscoroutine(res): res = await res
             except Exception as e:
                 res = f"Tool error: {e}"
-                logger.error(f"[Loop] Step {i}: tool '{t}' raised: {e}", exc_info=True)
-            ctx += f"\n[Step {i}] Action: {t} | Result: {res} | Reasoning: {data.get('thought')}"
-        else:
-            logger.warning(f"[Loop] Step {i}: unknown or missing tool '{t}'")
+            ctx += f"\n[Step {i}] Action: {t} | Result: {res}"
 
-    commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
-    logger.info(f"[Commit] {commit_result}")
+    await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
+    await signal_ui("Loop complete")
     return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
@@ -565,27 +479,36 @@ def health():
 def status():
     return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
-# ─── CHAT ROUTE ───────────────────────────────────────────────────────────────
-
 @app.post("/chat")
 async def chat(request: Request):
     try:
         body = await request.json()
         trigger = body.get("input", "").strip()
-        if not trigger:
-            return {"ok": False, "error": "No input provided"}
+        if not trigger: return {"ok": False, "error": "No input"}
         output = await run_autonomous_loop(trigger)
         return {"ok": True, "output": output}
     except Exception as e:
-        logger.error(f"[Chat] Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @app.post("/deploy")
 async def deploy(request: Request):
     body = await request.json()
-    trigger = body.get("input", "Manual Trigger via /deploy")
+    trigger = body.get("input", "Manual Trigger")
     asyncio.create_task(run_autonomous_loop(trigger))
     return {"status": "Agent loop started", "trigger": trigger}
+
+# --- PATCH: Contact UI signaling ---
+
+CONTACT_UI_URL = (os.getenv("UI_STATUS_URL", "")).strip()
+
+async def signal_ui(status: str):
+    """POST a status message to the configured UI endpoint."""
+    if not CONTACT_UI_URL: return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
+    except Exception as exc:
+        logger.warning(f"[UI] Signal failed: {exc}")
 
 # ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
 
@@ -596,14 +519,6 @@ async def catch_all_post(full_path: str, request: Request):
     except Exception:
         body = {}
 
-    trigger = (
-        body.get("input")
-        or body.get("message")
-        or body.get("text")
-        or body.get("prompt")
-        or (json.dumps(body) if body else f"POST /{full_path}")
-    )
-
-    logger.info(f"[Catch-All] /{full_path} → trigger: {trigger[:80]}")
+    trigger = body.get("input") or body.get("message") or f"POST /{full_path}"
     asyncio.create_task(run_autonomous_loop(trigger))
-    return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
+    return {"status": "Agent loop started", "path": f"/{full_path}"}
