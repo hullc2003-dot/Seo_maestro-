@@ -7,7 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO, format=”%(asctime)s | %(levelname)s | %(message)s”)
-logger = logging.getLogger(“AgentServer”)
+logger = logging.getLogger("AgentServer")
 
 # ─── MIDDLEWARE: Request Logger ───────────────────────────────────────────────
 
