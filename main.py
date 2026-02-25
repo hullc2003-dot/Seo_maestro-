@@ -250,7 +250,12 @@ async def fn_propose_patch(instruction="", **kwargs):
                 },
                 timeout=60.0
             )
-        proposed = resp.json()["choices"][0]["message"]["content"].strip()
+        rdata2 = resp.json()
+        if "choices" not in rdata2:
+            err = rdata2.get("error", rdata2)
+            logger.error(f"[ProposePatch] Groq call failed: {err}")
+            return f"patch_err: groq={err}"
+        proposed = rdata2["choices"][0]["message"]["content"].strip()
         if proposed.startswith("```"):
             proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
         result = await fn_commit("main_proposed.py", proposed, f"[AutoPatch] {instruction[:80]}")
@@ -285,6 +290,7 @@ async def fn_align_with_spec(**kwargs):
         "that is missing or incomplete in main.py right now?"
     )
     try:
+        await asyncio.sleep(3)
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -296,7 +302,14 @@ async def fn_align_with_spec(**kwargs):
                 },
                 timeout=30.0
             )
-        gap = resp.json()["choices"][0]["message"]["content"].strip()
+        rdata = resp.json()
+        if "choices" not in rdata:
+            err = rdata.get("error", rdata)
+            logger.error(f"[Align] Groq gap-call failed: {err}")
+            gap = "agents.md exists but gap LLM call failed — retrying next loop"
+            fn_2_log(m=f"[Align] {gap}")
+            return f"align_partial: {err}"
+        gap = rdata["choices"][0]["message"]["content"].strip()
         logger.info(f"[Align] Gap identified: {gap}")
         patch_result = await fn_propose_patch(instruction=gap)
         return f"Gap: {gap} | {patch_result}"
@@ -404,12 +417,9 @@ async def call_llm(p) -> str:
             usage = resp.get("usage", {})
             total_tokens = usage.get("total_tokens", 500)
             GROQ_TOKEN_LOG.append((time.time(), total_tokens))
-            logger.info(f"[Groq] tokens this call: {total_tokens} | TPM window: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
-
+            logger.info(f"[Groq] tokens: {total_tokens} | TPM: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
             return resp["choices"][0]["message"]["content"]
-
-        except RuntimeError:
-            raise
+        except RuntimeError: raise
         except Exception as e:
             logger.error(f"[Groq] API call failed: {e}", exc_info=True)
             GROQ_TOKEN_LOG.append((time.time(), 500))
@@ -421,75 +431,65 @@ async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
-        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
+        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 6]}")
 
-        if not raw:
-            logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
-            continue
+        if not raw: continue
 
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"[Loop] Step {i}: failed to parse LLM response: {e} | raw={raw!r}")
-            continue
+        except (json.JSONDecodeError, TypeError):
+            import re as _re
+            match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
+            if match:
+                try: data = json.loads(match.group())
+                except: data = None
+            else: data = None
+            if not data:
+                if i == 3:
+                    safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
+                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted"}
+                else: continue
 
         t, a = data.get("tool"), data.get("args", {})
-
-        if i == 5 and t != "align":
-            logger.warning(f"[Loop] Step 5: LLM tried '{t}' — forcing align()")
-            t = "align"
-            a = {}
+        if i == 5:
+            t, a = "align", {}
 
         if not t or t.lower() == "none":
-            logger.info(f"[Loop] Step {i}: LLM chose no tool — skipping")
-            ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
+            ctx += f"\n[Step {i}] No action | Reasoning: {data.get('thought')}"
             continue
 
         if t == "commit":
-            logger.warning(f"[Loop] Step {i}: LLM tried to call 'commit' mid-loop — blocked")
-            ctx += f"\n[Step {i}] Commit blocked (runs at end) | Reasoning: {data.get('thought')}"
+            ctx += f"\n[Step {i}] Commit blocked mid-loop | Reasoning: {data.get('thought')}"
             continue
 
         if t in TOOLS:
             try:
                 res = TOOLS[t](**a)
-                if asyncio.iscoroutine(res):
-                    res = await res
+                if asyncio.iscoroutine(res): res = await res
             except Exception as e:
                 res = f"Tool error: {e}"
-                logger.error(f"[Loop] Step {i}: tool '{t}' raised: {e}", exc_info=True)
             ctx += f"\n[Step {i}] Action: {t} | Result: {res} | Reasoning: {data.get('thought')}"
-        else:
-            logger.warning(f"[Loop] Step {i}: unknown or missing tool '{t}'")
-
-    commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
-    logger.info(f"[Commit] {commit_result}")
+    
+    await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
     return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(): return {"status": "ok"}
 
 @app.get("/status")
-def status():
-    return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
-
-# ─── CHAT ROUTE ───────────────────────────────────────────────────────────────
+def status(): return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE[["lvl"]]}
 
 @app.post("/chat")
 async def chat(request: Request):
     try:
         body = await request.json()
         trigger = body.get("input", "").strip()
-        if not trigger:
-            return {"ok": False, "error": "No input provided"}
+        if not trigger: return {"ok": False, "error": "No input"}
         output = await run_autonomous_loop(trigger)
         return {"ok": True, "output": output}
-    except Exception as e:
-        logger.error(f"[Chat] Error: {e}", exc_info=True)
-        return {"ok": False, "error": str(e)}
+    except Exception as e: return {"ok": False, "error": str(e)}
 
 @app.post("/deploy")
 async def deploy(request: Request):
@@ -498,23 +498,10 @@ async def deploy(request: Request):
     asyncio.create_task(run_autonomous_loop(trigger))
     return {"status": "Agent loop started", "trigger": trigger}
 
-# ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
-
 @app.api_route("/{full_path:path}", methods=["POST"])
 async def catch_all_post(full_path: str, request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    trigger = (
-        body.get("input")
-        or body.get("message")
-        or body.get("text")
-        or body.get("prompt")
-        or (json.dumps(body) if body else f"POST /{full_path}")
-    )
-
-    logger.info(f"[Catch-All] /{full_path} → trigger: {trigger[:80]}")
+    try: body = await request.json()
+    except: body = {}
+    trigger = body.get("input") or body.get("message") or body.get("text") or body.get("prompt") or f"POST /{full_path}"
     asyncio.create_task(run_autonomous_loop(trigger))
     return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
