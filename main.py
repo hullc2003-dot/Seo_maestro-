@@ -942,4 +942,3 @@ async def catch_all_post(full_path: str, request: Request):
     logger.info(f"[Catch-All] /{full_path} → {trigger[:80]}")
     asyncio.create_task(run_autonomous_loop(trigger))
     return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
-```:])
