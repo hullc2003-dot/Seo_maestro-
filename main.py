@@ -109,27 +109,53 @@ PRMPTS = [
     "Execute a final verification and commit the refined knowledge base."
 ]
 
-# ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
+## ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
 
-GROQ_SEMAPHORE = asyncio.Semaphore(3)   # max 3 concurrent LLM calls
+GROQ_SEMAPHORE = asyncio.Semaphore(3)
+
 GROQ_CALL_TIMES: list[float] = []
-GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", 25))  # stay under Groq's 30 RPM free tier cap
+GROQ_TOKEN_LOG: list[tuple[float, int]] = []   # (timestamp, tokens_used)
+GROQ_DAY_CALLS: list[float] = []               # timestamps for RPD tracking
+
+GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))      # requests/min
+GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT",  70_000))  # tokens/min
+GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))     # requests/day
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
 async def call_llm(p):
     async with GROQ_SEMAPHORE:
-        # Sliding window — drop timestamps older than 60s
         now = time.time()
-        GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
 
+        # ── Sliding windows ──────────────────────────────────────────────────
+        GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
+        GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
+        GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
+
+        # ── RPD guard ────────────────────────────────────────────────────────
+        if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
+            wait = 86_400 - (now - GROQ_DAY_CALLS[0])
+            logger.warning(f"[Groq throttle] RPD cap hit — waiting {wait:.0f}s (~{wait/3600:.1f}h)")
+            await asyncio.sleep(wait)
+
+        # ── RPM guard ────────────────────────────────────────────────────────
         if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
             wait = 60 - (now - GROQ_CALL_TIMES[0])
             logger.warning(f"[Groq throttle] RPM cap hit — waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
-        GROQ_CALL_TIMES.append(time.time())
-        await asyncio.sleep(1.5)  # base inter-call spacing
+        # ── TPM guard ────────────────────────────────────────────────────────
+        tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
+        if tokens_used >= GROQ_TPM_LIMIT:
+            wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
+            logger.warning(f"[Groq throttle] TPM cap hit ({tokens_used} used) — waiting {wait:.1f}s")
+            await asyncio.sleep(wait)
+
+        # ── Register this call ───────────────────────────────────────────────
+        ts = time.time()
+        GROQ_CALL_TIMES.append(ts)
+        GROQ_DAY_CALLS.append(ts)
+        await asyncio.sleep(1.5)
 
         try:
             c = http.client.HTTPSConnection("api.groq.com")
@@ -143,8 +169,17 @@ async def call_llm(p):
             })
             c.request("POST", "/openai/v1/chat/completions", body,
                       {"Authorization": f"Bearer {K}", "Content-Type": "application/json"})
-            return json.loads(c.getresponse().read().decode())["choices"][0]["message"]["content"]
+            resp = json.loads(c.getresponse().read().decode())
+
+            # ── Track actual token usage from response ───────────────────────
+            usage = resp.get("usage", {})
+            total_tokens = usage.get("total_tokens", 500)  # fallback estimate
+            GROQ_TOKEN_LOG.append((time.time(), total_tokens))
+            logger.info(f"[Groq] tokens this call: {total_tokens} | TPM window: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
+
+            return resp["choices"][0]["message"]["content"]
         except:
+            GROQ_TOKEN_LOG.append((time.time(), 500))  # pessimistic fallback
             return '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 # ─── AUTONOMOUS ENGINE ────────────────────────────────────────────────────────
