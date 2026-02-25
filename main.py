@@ -563,7 +563,7 @@ def health():
 
 @app.get("/status")
 def status():
-    return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE[“lvl”]}
+    return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
 # ─── CHAT ROUTE ───────────────────────────────────────────────────────────────
 
