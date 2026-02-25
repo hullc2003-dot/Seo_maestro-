@@ -319,7 +319,7 @@ PRMPTS = [
     "Identify the single most critical failure point in the previous step. You MUST call tool='fmt' with args={'d': '<failure point in one sentence>'}.",
     "Rewrite the current ruleset to prevent premature task exit. You MUST call tool='mut' with args={'p': '<your new ruleset as a single string>'}.",
     "Log a one-sentence final verification summary. You MUST call tool='log' with args={'m': '<verification summary>'}.",
-    "Compare current code against agents.md spec and propose alignment improvements. You MUST call tool='align' with args={}."
+    "MANDATORY FINAL STEP — no other tool is valid here. You MUST call tool='align' with args={}. Do NOT call chk, log, or any other tool."
 ]
 
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
@@ -434,6 +434,11 @@ async def run_autonomous_loop(input_str: str) -> str:
             continue
 
         t, a = data.get("tool"), data.get("args", {})
+
+        if i == 5 and t != "align":
+            logger.warning(f"[Loop] Step 5: LLM tried '{t}' — forcing align()")
+            t = "align"
+            a = {}
 
         if not t or t.lower() == "none":
             logger.info(f"[Loop] Step {i}: LLM chose no tool — skipping")
