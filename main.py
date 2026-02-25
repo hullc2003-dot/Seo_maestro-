@@ -174,7 +174,6 @@ try:
 except Exception as e:
     logger.error(f"[ProposePatch] {e}", exc_info=True)
     return f"patch_err: {e}"
-```
 
 async def fn_apply_patch(**kwargs):
 """Append main_patch.py content into main.py on GitHub."""
@@ -188,7 +187,7 @@ current = await fn_read_github("main.py")
 if "read_err" in current:
 return f"apply_err: could not read main.py – {current}"
 
-```
+
 # FIX BUG-5: use a simple, stable marker that actually exists in main.py
 # rather than embedding the entire signal_ui source as the marker string.
 INSERT_MARKER = "# ─── CATCH-ALL POST"
