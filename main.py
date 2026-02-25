@@ -176,20 +176,18 @@ except Exception as e:
     return f"patch_err: {e}"
 
 async def fn_apply_patch(**kwargs):
-"""Append main_patch.py content into main.py on GitHub."""
-patch = await fn_read_github("main_patch.py")
-if "read_err" in patch:
-return f"apply_err: {patch}"
-# FIX BUG-6: check for hyphens-only prefix, matching what fn_propose_patch writes
-if PATCH_HEADER_PREFIX not in patch:
-return f"apply_err: patch missing header '{PATCH_HEADER_PREFIX}' — unsafe to apply"
-current = await fn_read_github("main.py")
-if "read_err" in current:
-return f"apply_err: could not read main.py – {current}"
+    """Append main_patch.py content into main.py on GitHub."""
+    patch = await fn_read_github("main_patch.py")
+    if "read_err" in patch:
+        return f"apply_err: {patch}"
+    # FIX BUG-6: check for hyphens-only prefix, matching what fn_propose_patch writes
+    if PATCH_HEADER_PREFIX not in patch:
+        return f"apply_err: patch missing header '{PATCH_HEADER_PREFIX}' — unsafe to apply"
+    current = await fn_read_github("main.py")
+    if "read_err" in current:
+        return f"apply_err: could not read main.py – {current}"
 
 
-# FIX BUG-5: use a simple, stable marker that actually exists in main.py
-# rather than embedding the entire signal_ui source as the marker string.
 INSERT_MARKER = "# ─── CATCH-ALL POST"
 if INSERT_MARKER in current:
     updated = current.replace(INSERT_MARKER, patch.strip() + "\n\n\n" + INSERT_MARKER, 1)
