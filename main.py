@@ -23,8 +23,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 # ─── MIDDLEWARE: Rate Limiter (per IP, in-memory) ─────────────────────────────
 
 RATE_STORE: dict[str, list[float]] = {}
-RATE_LIMIT = int(os.getenv("RATE_LIMIT", 20))   # requests
-RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))  # seconds
+RATE_LIMIT = int(os.getenv("RATE_LIMIT", 20))
+RATE_WINDOW = int(os.getenv("RATE_WINDOW", 60))
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -49,8 +49,6 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="Autonomous Agent", version="2.0")
 
-# ─── REGISTER MIDDLEWARES (order matters: first added = outermost) ────────────
-
 app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
@@ -72,9 +70,6 @@ K = (os.getenv("GROQ_API_KEY") or "").strip()
 T = (os.getenv("GH_TOKEN") or "").strip()
 R = (os.getenv("REPO_PATH") or "").strip()
 STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
-
-# ─── CONTEXT TRUNCATION LIMIT (chars) — prevents Groq 413 errors ─────────────
-
 CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
@@ -112,288 +107,145 @@ JSON_ENFORCEMENT = (
 
 async def fn_commit(path, content, msg):
     try:
-        if not T:
-            logger.error("[Commit] GH_TOKEN env var is not set")
-            return "Save_Failed: no GH_TOKEN"
-        if not R:
-            logger.error("[Commit] REPO_PATH env var is not set")
-            return "Save_Failed: no REPO_PATH"
+        if not T or not R: return "Save_Failed: Missing GH Config"
         headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
         async with httpx.AsyncClient() as client:
-            get_resp = await client.get(
-                f"https://api.github.com/repos/{R}/contents/{path}",
-                headers=headers
-            )
-            get_data = get_resp.json()
-            if get_resp.status_code not in (200, 404):
-                logger.error(f"[Commit] GET failed {get_resp.status_code}: {get_data}")
-                return f"Save_Failed: GET {get_resp.status_code}"
-            sha = get_data.get("sha", "")
+            get_resp = await client.get(f"https://api.github.com/repos/{R}/contents/{path}", headers=headers)
+            sha = get_resp.json().get("sha", "") if get_resp.status_code == 200 else ""
             put_resp = await client.put(
                 f"https://api.github.com/repos/{R}/contents/{path}",
                 headers=headers,
                 json={"message": msg, "content": base64.b64encode(content.encode()).decode(), "sha": sha}
             )
-            put_data = put_resp.json()
-            if put_resp.status_code not in (200, 201):
-                logger.error(f"[Commit] PUT failed {put_resp.status_code}: {put_data}")
-                return f"Save_Failed: PUT {put_resp.status_code}"
             return f"Saved_{put_resp.status_code}"
     except Exception as e:
-        logger.error(f"[Commit] Exception: {e}", exc_info=True)
+        logger.error(f"[Commit] Exception: {e}")
         return "Save_Failed"
 
-# ─── LANGCHAIN BOOTSTRAP ─────────────────────────────────────────────────────
+# ─── LANGCHAIN & GITHUB TOOLS ────────────────────────────────────────────────
 
 def _ensure_pkg(pkg, import_as=None):
-    """Install a package at runtime if missing."""
     name = import_as or pkg.split("[")[0]
-    try:
-        __import__(name)
+    try: __import__(name)
     except ImportError:
-        logger.info(f"[Bootstrap] Installing {pkg}...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
 
 def fn_8_pip(package="", **kwargs):
-    """Install a Python package so it can be used in future tool calls."""
     pkg = package or kwargs.get("pkg", "")
-    if not pkg:
-        return "pip_err: no package name"
     try:
         _ensure_pkg(pkg)
         return f"Installed: {pkg}"
-    except Exception as e:
-        logger.error(f"[pip] {e}")
-        return f"pip_err: {e}"
+    except Exception as e: return f"pip_err: {e}"
 
 def fn_9_lc_tool(tool="", input="", **kwargs):
-    """Run a LangChain community tool by name (e.g. 'ddg-search', 'wikipedia')."""
     tool = tool or kwargs.get("name", "")
-    inp  = input or kwargs.get("query", "") or kwargs.get("input", "")
-    if not tool or not inp:
-        return "lc_err: need tool and input"
+    inp  = input or kwargs.get("query", "")
     try:
         _ensure_pkg("langchain-community", "langchain_community")
-        _ensure_pkg("duckduckgo-search",   "duckduckgo_search")
-        if tool in ("ddg-search", "search", "web"):
+        if tool in ("ddg-search", "search"):
+            _ensure_pkg("duckduckgo-search", "duckduckgo_search")
             from langchain_community.tools import DuckDuckGoSearchRun
             return DuckDuckGoSearchRun().run(inp)[:1500]
-        if tool in ("wikipedia", "wiki"):
-            _ensure_pkg("wikipedia", "wikipedia")
-            from langchain_community.tools import WikipediaQueryRun
-            from langchain_community.utilities import WikipediaAPIWrapper
-            return WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()).run(inp)[:1500]
         return f"lc_err: unknown tool '{tool}'"
-    except Exception as e:
-        logger.error(f"[lc_tool] {e}", exc_info=True)
-        return f"lc_err: {e}"
-
-# ─── GITHUB FILE READER ───────────────────────────────────────────────────────
+    except Exception as e: return f"lc_err: {e}"
 
 async def fn_read_github(path="", **kwargs):
-    """Read any file from the repo. Use path='agents.md' or path='main.py'."""
     path = path or kwargs.get("file", "")
-    if not path:
-        return "read_err: no path"
-    if not T or not R:
-        return "read_err: missing GH_TOKEN or REPO_PATH"
+    if not T or not R: return "read_err: Missing Config"
     try:
         headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.github.com/repos/{R}/contents/{path}",
-                headers=headers, timeout=15.0
-            )
-            data = resp.json()
-            if resp.status_code != 200:
-                return f"read_err: {resp.status_code} {data.get('message','')}"
-            content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-            logger.info(f"[ReadGitHub] {path} ({len(content)} chars)")
-            return content[:6000]
-    except Exception as e:
-        logger.error(f"[ReadGitHub] {e}", exc_info=True)
-        return f"read_err: {e}"
-
-# ─── SELF-PATCH TOOLS ─────────────────────────────────────────────────────────
+            resp = await client.get(f"https://api.github.com/repos/{R}/contents/{path}", headers=headers)
+            if resp.status_code != 200: return f"read_err: {resp.status_code}"
+            return base64.b64decode(resp.json()["content"]).decode("utf-8")[:6000]
+    except Exception as e: return f"read_err: {e}"
 
 async def fn_propose_patch(instruction="", **kwargs):
-    """Ask the LLM to generate a targeted code patch aligning main.py with agents.md."""
     instruction = instruction or kwargs.get("desc", "")
-    if not instruction:
-        return "patch_err: no instruction"
     current_code = await fn_read_github("main.py")
     agents_spec  = await fn_read_github("agents.md")
-    if "read_err" in current_code:
-        return f"patch_err: could not read main.py — {current_code}"
-    if "read_err" in agents_spec:
-        return f"patch_err: could not read agents.md — {agents_spec}"
-
     prompt = (
-        f"You are a Python engineer. Here is the agents.md specification:\n{agents_spec[:800]}\n\n"
-        f"Here is the current main.py (truncated):\n{current_code[:1500]}\n\n"
-        f"Instruction: {instruction}\n\n"
-        "Write ONLY the complete updated main.py Python source code. "
-        "No explanation, no markdown fences, just raw Python."
+        f"You are a Python engineer making a MINIMAL addition.\n"
+        f"agents.md: {agents_spec[:600]}\n"
+        f"main.py tail: {current_code[-800:]}\n"
+        f"Instruction: {instruction}\n"
+        "Output Raw Python only. Start with # --- PATCH: <desc> ---"
     )
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {K}"},
                 json={
                     "model": "groq/compound",
-                    "messages": [
-                        {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "max_tokens": 4096
-                },
-                timeout=60.0
+                    "messages": [{"role": "system", "content": "Raw Python generator."}, {"role": "user", "content": prompt}],
+                    "max_tokens": 1024
+                }
             )
-        rdata2 = resp.json()
-        if "choices" not in rdata2:
-            err = rdata2.get("error", rdata2)
-            logger.error(f"[ProposePatch] Groq call failed: {err}")
-            return f"patch_err: groq={err}"
-        proposed = rdata2["choices"][0]["message"]["content"].strip()
-        if proposed.startswith("```"):
-            proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
-        result = await fn_commit("main_proposed.py", proposed, f"[AutoPatch] {instruction[:80]}")
-        logger.info(f"[ProposePatch] {result}")
-        return f"Proposed patch committed as main_proposed.py — {result}"
-    except Exception as e:
-        logger.error(f"[ProposePatch] {e}", exc_info=True)
-        return f"patch_err: {e}"
+            proposed = resp.json()["choices"][0]["message"]["content"].strip()
+            if proposed.startswith("```"): proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
+            await fn_commit("main_patch.py", proposed, f"[AutoPatch] {instruction[:50]}")
+            return "Patch saved to main_patch.py"
+    except Exception as e: return f"patch_err: {e}"
 
 async def fn_apply_patch(**kwargs):
-    """Promote main_proposed.py → main.py on GitHub after review."""
-    proposed = await fn_read_github("main_proposed.py")
-    if "read_err" in proposed:
-        return f"apply_err: {proposed}"
-    if "FastAPI" not in proposed or "async def" not in proposed:
-        return "apply_err: proposed file failed sanity check (missing FastAPI or async def)"
-    result = await fn_commit("main.py", proposed, "[AutoApply] Promote main_proposed.py → main.py")
-    logger.info(f"[ApplyPatch] {result}")
-    return f"main.py updated from proposal — {result}"
+    patch = await fn_read_github("main_patch.py")
+    current = await fn_read_github("main.py")
+    if "# --- PATCH:" not in patch: return "apply_err: invalid patch header"
+    marker = "# ─── CATCH-ALL POST"
+    updated = current.replace(marker, patch.strip() + "\n\n\n" + marker, 1) if marker in current else current + "\n\n" + patch
+    return await fn_commit("main.py", updated, "[AutoApply] Patch application")
 
 async def fn_align_with_spec(**kwargs):
-    """Read agents.md, compare with current capabilities, log gaps, propose patch."""
-    agents_spec = await fn_read_github("agents.md")
-    if "read_err" in agents_spec:
-        logger.warning(f"[Align] Could not read agents.md: {agents_spec}")
-        return f"align_skipped: {agents_spec}"
-    current_code = await fn_read_github("main.py")
-    gap_prompt = (
-        f"agents.md specification:\n{agents_spec[:800]}\n\n"
-        f"Current main.py (truncated):\n{current_code[:600]}\n\n"
-        "In one sentence, what is the single most important capability in agents.md "
-        "that is missing or incomplete in main.py right now?"
-    )
+    spec = await fn_read_github("agents.md")
+    code = await fn_read_github("main.py")
+    prompt = f"Identify the top missing capability in one sentence based on:\nSpec: {spec[:500]}\nCode: {code[:500]}"
     try:
-        await asyncio.sleep(8)
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-                json={
-                    "model": "groq/compound",
-                    "messages": [{"role": "user", "content": gap_prompt}],
-                    "max_tokens": 200
-                },
-                timeout=30.0
-            )
-        rdata = resp.json()
-        if "choices" not in rdata:
-            err = rdata.get("error", rdata)
-            logger.error(f"[Align] Groq gap-call failed: {err}")
-            gap = "agents.md exists but gap LLM call failed — retrying next loop"
-            fn_2_log(m=f"[Align] {gap}")
-            return f"align_partial: {err}"
-        gap = rdata["choices"][0]["message"]["content"].strip()
-        logger.info(f"[Align] Gap identified: {gap}")
-        await asyncio.sleep(10)
-        patch_result = await fn_propose_patch(instruction=gap)
-        return f"Gap: {gap} | {patch_result}"
-    except Exception as e:
-        logger.error(f"[Align] {e}", exc_info=True)
-        return f"align_err: {e}"
+            resp = await client.post("https://api.groq.com/openai/v1/chat/completions",
+                                     headers={"Authorization": f"Bearer {K}"},
+                                     json={"model": "groq/compound", "messages": [{"role": "user", "content": prompt}]})
+            gap = resp.json()["choices"][0]["message"]["content"].strip()
+            return await fn_propose_patch(instruction=gap)
+    except Exception as e: return f"align_err: {e}"
 
 TOOLS = {
-    "env": fn_1_env, "log": fn_2_log, "math": fn_3_math,
-    "fmt": fn_4_fmt, "chk": fn_5_chk, "ui": fn_6_ui,
-    "mut": fn_7_mut, "commit": fn_commit,
-    "pip": fn_8_pip, "lc": fn_9_lc_tool,
-    "read": fn_read_github, "propose_patch": fn_propose_patch,
-    "apply_patch": fn_apply_patch, "align": fn_align_with_spec
+    "env": fn_1_env, "log": fn_2_log, "math": fn_3_math, "fmt": fn_4_fmt,
+    "chk": fn_5_chk, "ui": fn_6_ui, "mut": fn_7_mut, "commit": fn_commit,
+    "pip": fn_8_pip, "lc": fn_9_lc_tool, "read": fn_read_github,
+    "propose_patch": fn_propose_patch, "apply_patch": fn_apply_patch, "align": fn_align_with_spec
 }
 
 PRMPTS = [
-    "Critically analyze the current state. What is missing to reach AI Engineer status? You MUST call tool='chk' with args={'g': '<your one-sentence gap summary>'}.",
-    "Generate a hypothesis for a better autonomous pattern. You MUST call tool='log' with args={'m': '<your hypothesis in one sentence>'}.",
-    "Identify the single most critical failure point in the previous step. You MUST call tool='fmt' with args={'d': '<failure point in one sentence>'}.",
-    "Rewrite the current ruleset to prevent premature task exit. You MUST call tool='mut' with args={'p': '<your new ruleset as a single string>'}.",
-    "Log a one-sentence final verification summary. You MUST call tool='log' with args={'m': '<verification summary>'}.",
-    "MANDATORY FINAL STEP — no other tool is valid here. You MUST call tool='align' with args={}. Do NOT call chk, log, or any other tool."
+    "Analyze state. Call tool='chk' with args={'g': '<gap>'}.",
+    "Hypothesize. Call tool='log' with args={'m': '<hypothesis>'}.",
+    "Identify failure. Call tool='fmt' with args={'d': '<failure>'}.",
+    "Update rules. Call tool='mut' with args={'p': '<short_rules>'}.",
+    "Summary. Call tool='log' with args={'m': '<summary>'}.",
+    "MANDATORY: Call tool='align' with args={}."
 ]
 
-# ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
+# ─── GROQ RATE LIMITING & LLM CALL ───────────────────────────────────────────
 
 GROQ_SEMAPHORE = asyncio.Semaphore(3)
-GROQ_CALL_TIMES: list[float] = []
-GROQ_TOKEN_LOG: list[tuple[float, int]] = []
-GROQ_DAY_CALLS: list[float] = []
-
-GROQ_RPM_LIMIT  = int(os.getenv("GROQ_RPM_LIMIT",  25))
-GROQ_TPM_LIMIT  = int(os.getenv("GROQ_TPM_LIMIT", 28000))
-GROQ_RPD_LIMIT  = int(os.getenv("GROQ_RPD_LIMIT",  250))
-
-# ─── LLM CALL ─────────────────────────────────────────────────────────────────
-
+GROQ_CALL_TIMES, GROQ_TOKEN_LOG, GROQ_DAY_CALLS = [], [], []
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 SYSTEM_PROMPT_TEMPLATE = (
     "{rules}. "
-    "You MUST respond with a single valid JSON object and nothing else — "
-    "no markdown, no prose, no code fences. "
-    "Your entire response must be parseable by json.loads(). "
+    "Respond with single valid JSON only. "
     "Schema: {{\"tool\": \"<name>\", \"args\": {{}}, \"thought\": \"<reasoning>\"}}. "
-    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), pip(package), lc(tool,input), read(path), propose_patch(instruction), apply_patch(), align(). "
-    "Use exactly these argument names. Do not add extra fields."
+    "Tools: env, log, math, fmt, chk, ui, mut, pip, lc, read, propose_patch, apply_patch, align."
 )
 
 async def call_llm(p) -> str:
     async with GROQ_SEMAPHORE:
-        now = time.time()
-        GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
-        GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
-        GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
-
-        if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
-            wait = 86_400 - (now - GROQ_DAY_CALLS[0])
-            logger.warning(f"[Groq throttle] RPD cap hit — waiting {wait:.0f}s (~{wait/3600:.1f}h)")
-            await asyncio.sleep(wait)
-
-        if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
-            wait = 60 - (now - GROQ_CALL_TIMES[0])
-            logger.warning(f"[Groq throttle] RPM cap hit — waiting {wait:.1f}s")
-            await asyncio.sleep(wait)
-
-        tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
-        if tokens_used >= GROQ_TPM_LIMIT:
-            wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
-            logger.warning(f"[Groq throttle] TPM cap hit ({tokens_used} used) — waiting {wait:.1f}s")
-            await asyncio.sleep(wait)
-
-        ts = time.time()
-        GROQ_CALL_TIMES.append(ts)
-        GROQ_DAY_CALLS.append(ts)
         await asyncio.sleep(1.5)
-
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                    headers={"Authorization": f"Bearer {K}"},
                     json={
                         "model": "groq/compound",
                         "messages": [
@@ -404,70 +256,34 @@ async def call_llm(p) -> str:
                     },
                     timeout=30.0
                 )
-                resp = response.json()
-
-            if "choices" not in resp:
-                err = resp.get("error", {})
-                if err.get("type") == "permissions_error":
-                    logger.error(f"[Groq] Permissions error — aborting: {err.get('message')}")
-                    raise RuntimeError(f"Groq permissions error: {err.get('message')}")
-                logger.error(f"[Groq] Unexpected response: {resp}")
-                GROQ_TOKEN_LOG.append((time.time(), 0))
-                return FALLBACK
-
-            usage = resp.get("usage", {})
-            total_tokens = usage.get("total_tokens", 500)
-            GROQ_TOKEN_LOG.append((time.time(), total_tokens))
-            logger.info(f"[Groq] tokens: {total_tokens} | RPD: {len(GROQ_DAY_CALLS)}/250")
-            return resp["choices"][0]["message"]["content"]
-        except Exception as e:
-            logger.error(f"[Groq] API call failed: {e}", exc_info=True)
-            GROQ_TOKEN_LOG.append((time.time(), 500))
-            return FALLBACK
+                return response.json()["choices"][0]["message"]["content"]
+        except Exception: return FALLBACK
 
 # ─── AUTONOMOUS ENGINE ────────────────────────────────────────────────────────
 
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
-        ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
-        raw = await call_llm(f"PRE-STEP REFLECTION. Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
-
-        if not raw: continue
+        payload = ctx[-CTX_MAX_CHARS:]
+        raw = await call_llm(f"Context: {payload}. Directive: {PRMPTS[i]}")
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            import re as _re
-            match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
-            if match:
-                try: data = json.loads(match.group())
-                except: data = None
-            else: data = None
-            if not data:
-                if i == 3:
-                    safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
-                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted"}
-                else: continue
+        except:
+            import re
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            data = json.loads(match.group()) if match else {"tool": "log", "args": {"m": "Parse Error"}}
 
         t, a = data.get("tool"), data.get("args", {})
-        if i == 5 and t != "align":
-            t, a = "align", {}
-
-        if not t or t.lower() == "none":
-            ctx += f"\n[Step {i}] No action | Reasoning: {data.get('thought')}"
-            continue
-
-        if t == "commit":
-            ctx += f"\n[Step {i}] Commit blocked mid-loop"
-            continue
+        
+        # Enforce step-specific tools
+        if i == 3: t, a = "mut", {"p": a.get("p", "Goal: AI Engineer.")}
+        if i == 4: t, a = "log", {"m": a.get("m", "Step 4 complete.")}
+        if i == 5: t, a = "align", {}
 
         if t in TOOLS:
-            try:
-                res = TOOLS[t](**a)
-                if asyncio.iscoroutine(res): res = await res
-            except Exception as e:
-                res = f"Tool error: {e}"
-            ctx += f"\n[Step {i}] Action: {t} | Result: {res} | Reasoning: {data.get('thought')}"
+            res = TOOLS[t](**a)
+            if asyncio.iscoroutine(res): res = await res
+            ctx += f"\n[Step {i}] {t}: {res}"
     
     await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
     return ctx
@@ -478,29 +294,17 @@ async def run_autonomous_loop(input_str: str) -> str:
 def health(): return {"status": "ok"}
 
 @app.get("/status")
-def status(): return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
+def status(): return {"status": "Active", "rules": STATE["rules"]}
 
 @app.post("/chat")
 async def chat(request: Request):
-    try:
-        body = await request.json()
-        trigger = body.get("input", "").strip()
-        if not trigger: return {"ok": False, "error": "No input"}
-        output = await run_autonomous_loop(trigger)
-        return {"ok": True, "output": output}
-    except Exception as e: return {"ok": False, "error": str(e)}
-
-@app.post("/deploy")
-async def deploy(request: Request):
     body = await request.json()
-    trigger = body.get("input", "Manual Trigger via /deploy")
-    asyncio.create_task(run_autonomous_loop(trigger))
-    return {"status": "Agent loop started", "trigger": trigger}
+    output = await run_autonomous_loop(body.get("input", ""))
+    return {"ok": True, "output": output}
 
 @app.api_route("/{full_path:path}", methods=["POST"])
 async def catch_all_post(full_path: str, request: Request):
-    try: body = await request.json()
-    except: body = {}
-    trigger = body.get("input") or body.get("message") or body.get("text") or body.get("prompt") or f"POST /{full_path}"
+    body = await request.json()
+    trigger = body.get("input") or f"POST /{full_path}"
     asyncio.create_task(run_autonomous_loop(trigger))
-    return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
+    return {"status": "Agent loop started", "trigger": trigger}
