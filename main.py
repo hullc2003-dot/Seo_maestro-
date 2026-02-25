@@ -290,17 +290,17 @@ async def fn_apply_patch(**kwargs):
     if "read_err" in current:
         return f"apply_err: could not read main.py – {current}"
     
-    # Marker for insertion logic
+    # Append patch before the catch-all route
     insert_marker = "# --- PATCH: Contact UI signaling —"
 
     if insert_marker in current:
         updated = current.replace(insert_marker, patch.strip() + "\n\n\n" + insert_marker, 1)
     else:
         updated = current + "\n\n" + patch.strip()
-        
+
     if "FastAPI" not in updated or "async def run_autonomous_loop" not in updated:
         return "apply_err: merged file failed sanity check -- autonomous loop missing"
-        
+
     result = await fn_commit("main.py", updated, f"[AutoApply] Append patch to main.py")
     logger.info(f"[ApplyPatch] {result}")
     return f"main.py patched -- {result}"
@@ -321,7 +321,7 @@ async def fn_align_with_spec(**kwargs):
         "that is missing or incomplete in main.py right now?"
     )
     try:
-        await asyncio.sleep(8)  # wait for TPM window to recover
+        await asyncio.sleep(8)  # wait for TPM window to recover after 6-call loop
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -342,7 +342,7 @@ async def fn_align_with_spec(**kwargs):
             return f"align_partial: {err}"
         gap = rdata["choices"][0]["message"]["content"].strip()
         logger.info(f"[Align] Gap identified: {gap}")
-        await asyncio.sleep(10)
+        await asyncio.sleep(10)  # let TPM window recover before propose_patch
         patch_result = await fn_propose_patch(instruction=gap)
         return f"Gap: {gap} | {patch_result}"
     except Exception as e:
@@ -396,26 +396,32 @@ SYSTEM_PROMPT_TEMPLATE = (
 async def call_llm(p) -> str:
     async with GROQ_SEMAPHORE:
         now = time.time()
+        
+        # ── Sliding windows ──────────────────────────────────────────────────
         GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
         GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
         GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
 
+        # ── RPD guard ────────────────────────────────────────────────────────
         if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
             wait = 86_400 - (now - GROQ_DAY_CALLS[0])
-            logger.warning(f"[Groq throttle] RPD cap hit -- waiting {wait:.0f}s")
+            logger.warning(f"[Groq throttle] RPD cap hit -- waiting {wait:.0f}s (~{wait/3600:.1f}h)")
             await asyncio.sleep(wait)
 
+        # ── RPM guard ────────────────────────────────────────────────────────
         if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
             wait = 60 - (now - GROQ_CALL_TIMES[0])
             logger.warning(f"[Groq throttle] RPM cap hit -- waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
+        # ── TPM guard ────────────────────────────────────────────────────────
         tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
         if tokens_used >= GROQ_TPM_LIMIT:
             wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
             logger.warning(f"[Groq throttle] TPM cap hit ({tokens_used} used) -- waiting {wait:.1f}s")
             await asyncio.sleep(wait)
 
+        # ── Register this call ───────────────────────────────────────────────
         ts = time.time()
         GROQ_CALL_TIMES.append(ts)
         GROQ_DAY_CALLS.append(ts)
@@ -443,14 +449,19 @@ async def call_llm(p) -> str:
                 if err.get("type") == "permissions_error":
                     logger.error(f"[Groq] Permissions error -- aborting: {err.get('message')}")
                     raise RuntimeError(f"Groq permissions error: {err.get('message')}")
+                logger.error(f"[Groq] Unexpected response (no 'choices'): {resp}")
                 GROQ_TOKEN_LOG.append((time.time(), 0))
                 return FALLBACK
 
             usage = resp.get("usage", {})
             total_tokens = usage.get("total_tokens", 500)
             GROQ_TOKEN_LOG.append((time.time(), total_tokens))
+            logger.info(f"[Groq] tokens this call: {total_tokens} | TPM window: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
+
             return resp["choices"][0]["message"]["content"]
 
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(f"[Groq] API call failed: {e}", exc_info=True)
             GROQ_TOKEN_LOG.append((time.time(), 500))
@@ -461,52 +472,73 @@ async def call_llm(p) -> str:
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
+        # FIX 4: truncate ctx before sending to prevent Groq 413 errors
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
+
         raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
         if not raw:
+            logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
             continue
 
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as e:
+            # Fallback: try to extract JSON object from markdown-wrapped response
             import re as _re
             match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
             if match:
                 try:
                     data = json.loads(match.group())
+                    logger.warning(f"[Loop] Step {i}: extracted JSON from markdown response")
                 except Exception:
                     data = None
             else:
                 data = None
-            
             if not data:
+                # Last resort: if this is the mut step, build a safe default
                 if i == 3:
+                    logger.warning(f"[Loop] Step {i}: mut markdown fallback -- extracting ruleset from raw text")
+                    # Truncate raw to first 500 chars as the new ruleset
                     safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
-                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted"}
+                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted from markdown"}
                 else:
+                    logger.error(f"[Loop] Step {i}: failed to parse LLM response: {e} | raw={raw!r}")
                     continue
 
         t, a = data.get("tool"), data.get("args", {})
 
+        # Step 4 is reserved exclusively for log -- block anything else
         if i == 4 and t != "log":
+            logger.warning(f"[Loop] Step 4: LLM tried '{t}' -- forcing log()")
             t = "log"
-            a = {"m": f"Verification: steps 0-3 complete."}
+            a = {"m": f"Verification: steps 0-3 complete. Context summary: {ctx[-150:].replace(chr(10),' ')}"}
 
+        # Step 3 is reserved exclusively for mut -- block anything else
         if i == 3 and t != "mut":
+            logger.warning(f"[Loop] Step 3: LLM tried '{t}' -- forcing mut()")
             t = "mut"
-            a = {"p": "Goal: AI Engineer. Prevent premature exit."}
+            # build a safe default ruleset from context so mut isn't empty
+            a = {"p": f"Goal: AI Engineer. Prevent premature exit. Require full analysis before termination. Context: {ctx[-200:].replace(chr(10),' ')}"}
 
+        # Step 5 is reserved exclusively for align -- block anything else
         if i == 5 and t != "align":
+            logger.warning(f"[Loop] Step 5: LLM tried '{t}' -- forcing align()")
             t = "align"
             a = {}
+        if i == 5 and t == "align":
+            logger.info("[Loop] Step 5: running align() against agents.md")
 
+        # FIX 5: skip cleanly when LLM emits tool="none" or omits tool entirely
         if not t or t.lower() == "none":
-            ctx += f"\n[Step {i}] No action taken"
+            logger.info(f"[Loop] Step {i}: LLM chose no tool -- skipping")
+            ctx += f"\n[Step {i}] No action taken | Reasoning: {data.get('thought')}"
             continue
 
+        # FIX: prevent LLM from invoking commit mid-loop; it runs once after all steps
         if t == "commit":
-            ctx += f"\n[Step {i}] Commit blocked (runs at end)"
+            logger.warning(f"[Loop] Step {i}: LLM tried to call 'commit' mid-loop -- blocked")
+            ctx += f"\n[Step {i}] Commit blocked (runs at end) | Reasoning: {data.get('thought')}"
             continue
 
         if t in TOOLS:
@@ -516,11 +548,13 @@ async def run_autonomous_loop(input_str: str) -> str:
                     res = await res
             except Exception as e:
                 res = f"Tool error: {e}"
-            ctx += f"\n[Step {i}] Action: {t} | Result: {res}"
+                logger.error(f"[Loop] Step {i}: tool '{t}' raised: {e}", exc_info=True)
+            ctx += f"\n[Step {i}] Action: {t} | Result: {res} | Reasoning: {data.get('thought')}"
         else:
-            logger.warning(f"[Loop] Step {i}: unknown tool '{t}'")
+            logger.warning(f"[Loop] Step {i}: unknown or missing tool '{t}'")
 
     commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
+    logger.info(f"[Commit] {commit_result}")
     await signal_ui("Loop complete")
     return ctx
 
@@ -546,6 +580,7 @@ async def chat(request: Request):
         output = await run_autonomous_loop(trigger)
         return {"ok": True, "output": output}
     except Exception as e:
+        logger.error(f"[Chat] Error: {e}", exc_info=True)
         return {"ok": False, "error": str(e)}
 
 @app.post("/deploy")
@@ -560,14 +595,18 @@ async def deploy(request: Request):
 CONTACT_UI_URL = (os.getenv("UI_STATUS_URL", "")).strip()
 
 async def signal_ui(status: str):
-    """POST a status message to the configured UI endpoint."""
+    """POST a status message to the configured UI endpoint (UI_STATUS_URL env var)."""
     if not CONTACT_UI_URL:
-        return
+        return  # no-op if not configured
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
+            if resp.status_code != 200:
+                logger.warning(f"[UI] Signal returned HTTP {resp.status_code}")
+            else:
+                logger.info(f"[UI] Signaled: {status}")
     except Exception as exc:
-        logger.warning(f"[UI] Signal failed: {exc}")
+        logger.warning(f"[UI] Signal failed (non-fatal): {exc}")
 
 # ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
 
