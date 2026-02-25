@@ -19,20 +19,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         logger.info(f"← {response.status_code} | {elapsed:.1f}ms")
         return response
 
-# ─── MIDDLEWARE: API Key Auth ─────────────────────────────────────────────────
-
-class APIKeyMiddleware(BaseHTTPMiddleware):
-    EXEMPT = {"/status", "/docs", "/openapi.json"}
-
-    async def dispatch(self, request: Request, call_next):
-        if request.url.path in self.EXEMPT:
-            return await call_next(request)
-        key = request.headers.get("X-API-Key")
-        expected = os.getenv("AGENT_API_KEY")
-        if expected and key != expected:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
-
 # ─── MIDDLEWARE: Rate Limiter (per IP, in-memory) ─────────────────────────────
 
 RATE_STORE: dict[str, list[float]] = {}
@@ -67,7 +53,7 @@ app = FastAPI(title="Autonomous Agent", version="2.0")
 app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(APIKeyMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
@@ -123,25 +109,43 @@ PRMPTS = [
     "Execute a final verification and commit the refined knowledge base."
 ]
 
+# ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
+
+GROQ_SEMAPHORE = asyncio.Semaphore(3)   # max 3 concurrent LLM calls
+GROQ_CALL_TIMES: list[float] = []
+GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", 25))  # stay under Groq's 30 RPM free tier cap
+
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
 async def call_llm(p):
-    await asyncio.sleep(1.5)
-    try:
-        c = http.client.HTTPSConnection("api.groq.com")
-        body = json.dumps({
-            "model": "llama3-70b-8192",
-            "messages": [
-                {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}" plot},
-                {"role": "user", "content": p}
-            ],
-            "response_format": {"type": "json_object"}
-        })
-        c.request("POST", "/openai/v1/chat/completions", body,
-                  {"Authorization": f"Bearer {K}", "Content-Type": "application/json"})
-        return json.loads(c.getresponse().read().decode())["choices"][0]["message"]["content"]
-    except:
-        return '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
+    async with GROQ_SEMAPHORE:
+        # Sliding window — drop timestamps older than 60s
+        now = time.time()
+        GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
+
+        if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
+            wait = 60 - (now - GROQ_CALL_TIMES[0])
+            logger.warning(f"[Groq throttle] RPM cap hit — waiting {wait:.1f}s")
+            await asyncio.sleep(wait)
+
+        GROQ_CALL_TIMES.append(time.time())
+        await asyncio.sleep(1.5)  # base inter-call spacing
+
+        try:
+            c = http.client.HTTPSConnection("api.groq.com")
+            body = json.dumps({
+                "model": "llama3-70b-8192",
+                "messages": [
+                    {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
+                    {"role": "user", "content": p}
+                ],
+                "response_format": {"type": "json_object"}
+            })
+            c.request("POST", "/openai/v1/chat/completions", body,
+                      {"Authorization": f"Bearer {K}", "Content-Type": "application/json"})
+            return json.loads(c.getresponse().read().decode())["choices"][0]["message"]["content"]
+        except:
+            return '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 # ─── AUTONOMOUS ENGINE ────────────────────────────────────────────────────────
 
@@ -163,12 +167,29 @@ async def run_autonomous_loop(input_str: str):
 def status():
     return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
+# ─── CHAT ROUTE (matches your UI exactly) ─────────────────────────────────────
+
+@app.post("/chat")
+async def chat(request: Request):
+    try:
+        body = await request.json()
+        trigger = body.get("input", "").strip()
+        if not trigger:
+            return {"ok": False, "error": "No input provided"}
+        output = await run_autonomous_loop(trigger)
+        return {"ok": True, "output": output}
+    except Exception as e:
+        logger.error(f"[Chat] Error: {e}", exc_info=True)
+        return {"ok": False, "error": str(e)}
+
 @app.post("/deploy")
 async def deploy(request: Request):
     body = await request.json()
     trigger = body.get("input", "Manual Trigger via /deploy")
     asyncio.create_task(run_autonomous_loop(trigger))
     return {"status": "Agent loop started", "trigger": trigger}
+
+# ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
 
 @app.api_route("/{full_path:path}", methods=["POST"])
 async def catch_all_post(full_path: str, request: Request):
