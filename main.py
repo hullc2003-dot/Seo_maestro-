@@ -215,7 +215,7 @@ async def fn_propose_patch(instruction="", **kwargs):
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-                json={"model": "groq", "messages": [
+                json={"model": "groq/compound", "messages": [
                     {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
                     {"role": "user",   "content": prompt},
                 ], "max_tokens": 1024},
