@@ -32,7 +32,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.time()
         hits = [t for t in RATE_STORE.get(ip, []) if now - t < RATE_WINDOW]
     if len(hits) >= RATE_LIMIT:
-    return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
         hits.append(now)
         RATE_STORE[ip] = hits
 # FIX FLOW-2: evict IPs whose last hit is older than 2× the window
