@@ -143,7 +143,6 @@ prompt = (
     f"Output MUST start with exactly: {PATCH_HEADER_PREFIX} <description> ---\n"
     "No markdown fences. Raw Python only. Max 60 lines."
 )
-        try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
