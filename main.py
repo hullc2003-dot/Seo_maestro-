@@ -162,6 +162,9 @@ async def run_autonomous_loop(input_str: str):
     return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/status")
 def status():
