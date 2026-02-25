@@ -1,4 +1,5 @@
-# module2.py: Tools and Functions (OpenRouter Integrated)
+# module2.py: Optimized Tools and Functions (Deterministic + OpenRouter Escalation)
+
 import asyncio
 import base64
 import json
@@ -10,10 +11,38 @@ import httpx
 import os
 import ast
 import re
-import tempfile
+import hashlib
 from typing import Dict, Any, Callable
 
 from module1 import T, R, STATE, CTX_MAX_CHARS, signal_ui, logger, call_llm
+
+# =========================
+# LLM Guardrails + Cache
+# =========================
+
+LLM_CACHE: Dict[str, str] = {}
+LLM_CALL_LIMIT = 5
+LLM_CALL_COUNT = 0
+
+
+async def safe_call_llm(prompt: str) -> str:
+    global LLM_CALL_COUNT
+
+    key = hashlib.sha256(prompt.encode()).hexdigest()
+    if key in LLM_CACHE:
+        return LLM_CACHE[key]
+
+    if LLM_CALL_COUNT >= LLM_CALL_LIMIT:
+        return "llm_guard: call limit reached"
+
+    LLM_CALL_COUNT += 1
+    response = await call_llm(prompt)
+
+    if response:
+        LLM_CACHE[key] = response
+
+    return response or ""
+
 
 # =========================
 # Basic Tools
@@ -66,15 +95,52 @@ def fn_7_mut(new_rule: str) -> None:
     asyncio.create_task(signal_ui("Operational rules mutated"))
 
 # =========================
+# GitHub Utilities
+# =========================
+
+async def fn_read_github(path: str):
+    if not T or not R:
+        return "read_err: missing GH_TOKEN or REPO"
+
+    headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{R}/contents/{path}",
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            return f"read_err: {resp.status_code}"
+
+        data = resp.json()
+        return base64.b64decode(data["content"]).decode()
+
+
+async def github_search(query: str):
+    if not T:
+        return []
+
+    headers = {"Authorization": f"token {T}"}
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://api.github.com/search/code",
+            headers=headers,
+            params={"q": f"repo:{R} {query}"}
+        )
+        if resp.status_code != 200:
+            return []
+
+        return resp.json().get("items", [])
+
+# =========================
 # GitHub Commit
 # =========================
 
 async def fn_commit(path, content, msg):
     try:
-        if not T:
-            return "Save_Failed: no GH_TOKEN"
-        if not R:
-            return "Save_Failed: no REPO_PATH"
+        if not T or not R:
+            return "Save_Failed: no GH_TOKEN or REPO"
 
         headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
 
@@ -107,7 +173,22 @@ async def fn_commit(path, content, msg):
         return "Save_Failed"
 
 # =========================
-# LLM Patch Proposal (OpenRouter)
+# Deterministic Patch Detection
+# =========================
+
+def detect_missing_main_function(code: str):
+    try:
+        tree = ast.parse(code)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "main":
+                return False
+        return True
+    except Exception:
+        return False
+
+
+# =========================
+# Patch Proposal (Hybrid)
 # =========================
 
 PATCH_HEADER_PREFIX = "# — PATCH:"
@@ -118,46 +199,48 @@ async def fn_propose_patch(instruction="", **kwargs):
         return "patch_err: no instruction"
 
     current_code = await fn_read_github("main.py")
-    agents_spec  = await fn_read_github("agents.md")
+    agents_spec = await fn_read_github("agents.md")
 
     if "read_err" in current_code:
         return "patch_err: could not read main.py"
-    if "read_err" in agents_spec:
-        return "patch_err: could not read agents.md"
 
-    spec_head = agents_spec[:250].replace("\n", " ")
-    code_tail = current_code[-350:]
-
-    prompt = (
-        f"agents.md goal: {spec_head}\n\n"
-        f"main.py tail:\n{code_tail}\n\n"
-        f"Task: {instruction}\n\n"
-        "Add ONLY the missing Python. No duplicate imports. "
-        f"First line MUST be: {PATCH_HEADER_PREFIX} <desc> —\n"
-        "No markdown. Raw Python only. Max 40 lines."
-    )
-
-    try:
-        response = await call_llm(prompt)
-
-        if not response:
-            return "patch_err: empty LLM response"
-
-        proposed = response.strip()
-
-        result = await fn_commit(
-            "main_patch.py",
-            proposed,
-            f"[AutoPatch] {instruction[:80]}"
+    # === Deterministic Fix First ===
+    if detect_missing_main_function(current_code):
+        template_patch = (
+            f"{PATCH_HEADER_PREFIX} Add main function —\n\n"
+            "def main():\n"
+            "    print('Application started')\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
         )
 
-        return f"Proposed patch committed as main_patch.py — {result}"
+        return await fn_commit(
+            "main_patch.py",
+            template_patch,
+            "[AutoPatch] Added missing main function"
+        )
 
-    except Exception as e:
-        return f"patch_err: {e}"
+    # === Escalate to LLM Only If Needed ===
+    prompt = (
+        f"Instruction: {instruction}\n"
+        "Add ONLY missing Python code. No markdown. Max 40 lines."
+    )
+
+    response = await safe_call_llm(prompt)
+
+    if not response or response.startswith("llm_guard"):
+        return "patch_err: LLM unavailable or guard triggered"
+
+    proposed = response.strip()
+
+    return await fn_commit(
+        "main_patch.py",
+        proposed,
+        f"[AutoPatch] {instruction[:80]}"
+    )
 
 # =========================
-# Alignment (OpenRouter)
+# Alignment (Deterministic First)
 # =========================
 
 async def fn_align_with_spec(**kwargs):
@@ -167,41 +250,56 @@ async def fn_align_with_spec(**kwargs):
     if "read_err" in agents_spec or "read_err" in current_code:
         return "align_err: cannot read spec or code"
 
-    spec_snippet = agents_spec[:150].replace("\n", " ")
-    code_snippet = current_code[-200:].replace("\n", " ")
+    # === Simple Regex Spec Extraction ===
+    required_functions = re.findall(r"must implement (\w+)", agents_spec, re.IGNORECASE)
 
-    gap_prompt = (
-        f"spec: {spec_snippet} | "
-        f"code tail: {code_snippet} | "
-        "ONE sentence: top missing capability?"
+    missing = []
+    try:
+        tree = ast.parse(current_code)
+        existing = {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+
+        for fn in required_functions:
+            if fn not in existing:
+                missing.append(fn)
+
+    except Exception:
+        pass
+
+    if missing:
+        instruction = f"Implement missing functions: {', '.join(missing)}"
+        return await fn_propose_patch(instruction=instruction)
+
+    # === Escalate Only If Nothing Deterministic Found ===
+    prompt = (
+        f"Spec summary: {agents_spec[:150]}\n"
+        f"Code tail: {current_code[-200:]}\n"
+        "One sentence: top missing capability?"
     )
 
-    try:
-        gap = await call_llm(gap_prompt)
-        gap = gap.strip()
+    gap = await safe_call_llm(prompt)
 
-        logger.info(f"[Align] Gap: {gap}")
+    if not gap:
+        return "align_ok: no major gap detected"
 
-        patch_result = await fn_propose_patch(instruction=gap)
-
-        return f"Gap: {gap} | {patch_result}"
-
-    except Exception as e:
-        return f"align_err: {e}"
+    return await fn_propose_patch(instruction=gap.strip())
 
 # =========================
 # Tool Registry
 # =========================
 
 TOOLS: dict = {
-    "env":            fn_1_env,
-    "log":            fn_2_log,
-    "math":           fn_3_math,
-    "fmt":            fn_4_fmt,
-    "chk":            fn_5_chk,
-    "ui":             fn_6_ui,
-    "mut":            fn_7_mut,
-    "commit":         fn_commit,
-    "propose_patch":  fn_propose_patch,
-    "align":          fn_align_with_spec,
+    "env": fn_1_env,
+    "log": fn_2_log,
+    "math": fn_3_math,
+    "fmt": fn_4_fmt,
+    "chk": fn_5_chk,
+    "ui": fn_6_ui,
+    "mut": fn_7_mut,
+    "commit": fn_commit,
+    "propose_patch": fn_propose_patch,
+    "align": fn_align_with_spec,
 }
