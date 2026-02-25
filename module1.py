@@ -54,7 +54,7 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(","))
 
-K = (os.getenv("GROQ_API_KEY") or "").strip()
+K = (os.getenv("OR_KEY") or "").strip()
 T = (os.getenv("GH_TOKEN")     or "").strip()
 R = (os.getenv("REPO_PATH")    or "").strip()
 STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
