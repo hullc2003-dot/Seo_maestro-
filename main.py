@@ -45,7 +45,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 class ErrorHandlerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        try: return await call_next(request)
+        try: 
+            return await call_next(request)
         except Exception as exc:logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse({"error": "Internal server error", "detail": str(exc)}, status_code=500)
 
