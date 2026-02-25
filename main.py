@@ -86,19 +86,13 @@ CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 CONTACT_UI_URL = (os.getenv("UI_STATUS_URL", "")).strip()
 
-async def signal_ui(status: str):
-"""POST a status message to the configured UI endpoint (UI_STATUS_URL env var)."""
-if not CONTACT_UI_URL:
-return
-try:
-async with httpx.AsyncClient() as client:
-resp = await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
-if resp.status_code != 200:
-logger.warning(f"[UI] Signal returned HTTP {resp.status_code}")
-else:
-logger.info(f"[UI] Signaled: {status}")
-except Exception as exc:
-logger.warning(f"[UI] Signal failed (non-fatal): {exc}")
+async def signal_ui(status: str):"""POST a status message to the configured UI endpoint (UI_STATUS_URL env var)."""
+    if not CONTACT_UI_URL:
+    return
+    try:
+async with httpx.AsyncClient() as client:resp = await client.post(CONTACT_UI_URL, json={"status": status}, timeout=5.0)
+    if resp.status_code != 200:logger.warning(f"[UI] Signal returned HTTP {resp.status_code}")
+    else:logger.info(f"[UI] Signaled: {status}")except Exception as exc:logger.warning(f"[UI] Signal failed (non-fatal): {exc}")
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
 
