@@ -198,55 +198,55 @@ else:
 if "FastAPI" not in updated or "run_autonomous_loop" not in updated:
     return "apply_err: merged file failed sanity check — aborting"
 
-result = await fn_commit("main.py", updated, "[AutoApply] Append patch to main.py")
-logger.info(f"[ApplyPatch] {result}")
-return f"main.py patched — {result}"
-```
+    result = await fn_commit("main.py", updated, "[AutoApply] Append patch to main.py")
+    logger.info(f"[ApplyPatch] {result}")
+    return f"main.py patched — {result}"
 
 # ─── AGENTS.MD ALIGNMENT STEP ────────────────────────────────────────────────
 
 async def fn_align_with_spec(**kwargs):
-"""Read agents.md, compare with current capabilities, log gaps, propose patch."""
-agents_spec  = await fn_read_github("agents.md")
-if "read_err" in agents_spec:
-logger.warning(f"[Align] Could not read agents.md: {agents_spec}")
-return f"align_skipped: {agents_spec}"
-current_code = await fn_read_github("main.py")
-gap_prompt = (
-f"agents.md specification:\n{agents_spec[:800]}\n\n"
-f"Current main.py (truncated):\n{current_code[:600]}\n\n"
-"In one sentence, what is the single most important capability in agents.md "
-"that is missing or incomplete in main.py right now?"
-)
-try:
-await asyncio.sleep(8)
-async with httpx.AsyncClient() as client:
-resp = await client.post(
-"https://api.groq.com/openai/v1/chat/completions",
-headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-json={
-# FIX BUG-4: valid Groq model name
-"model": "compound-beta",
-"messages": [{"role": "user", "content": gap_prompt}],
-"max_tokens": 200,
-},
-timeout=30.0,
-)
-rdata = resp.json()
-if "choices" not in rdata:
-err  = rdata.get("error", rdata)
-logger.error(f"[Align] Groq gap-call failed: {err}")
-gap  = "agents.md exists but gap LLM call failed — retrying next loop"
-fn_2_log(m=f"[Align] {gap}")
-return f"align_partial: {err}"
-gap = rdata["choices"][0]["message"]["content"].strip()
-logger.info(f"[Align] Gap identified: {gap}")
-await asyncio.sleep(10)
-patch_result = await fn_propose_patch(instruction=gap)
-return f"Gap: {gap} | {patch_result}"
-except Exception as e:
-logger.error(f"[Align] {e}", exc_info=True)
-return f"align_err: {e}"
+    """Read agents.md, compare with current capabilities, log gaps, propose patch."""
+    agents_spec  = await fn_read_github("agents.md")
+    if "read_err" in agents_spec:
+        logger.warning(f"[Align] Could not read agents.md: {agents_spec}")
+        return f"align_skipped: {agents_spec}"
+    current_code = await fn_read_github("main.py")
+    gap_prompt = (
+        f"agents.md specification:\n{agents_spec[:800]}\n\n"
+        f"Current main.py (truncated):\n{current_code[:600]}\n\n"
+        "In one sentence, what is the single most important capability in agents.md "
+        "that is missing or incomplete in main.py right now?"
+    )
+    try:
+        await asyncio.sleep(8)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                json={
+                    # FIX BUG-4: valid Groq model name
+                    "model": "compound-beta",
+                    "messages": [{"role": "user", "content": gap_prompt}],
+                    "max_tokens": 200,
+                },
+                timeout=30.0,
+            )
+            rdata = resp.json()
+            if "choices" not in rdata:
+                err  = rdata.get("error", rdata)
+                logger.error(f"[Align] Groq gap-call failed: {err}")
+                gap  = "agents.md exists but gap LLM call failed — retrying next loop"
+                fn_2_log(m=f"[Align] {gap}")
+                return f"align_partial: {err}"
+            gap = rdata["choices"][0]["message"]["content"].strip()
+            logger.info(f"[Align] Gap identified: {gap}")
+            await asyncio.sleep(10)
+            patch_result = await fn_propose_patch(instruction=gap)
+            return f"Gap: {gap} | {patch_result}"
+    except Exception as e:
+        logger.error(f"[Align] {e}", exc_info=True)
+        return f"align_err: {e}"
+
 
 # ─── TOOL REGISTRY ────────────────────────────────────────────────────────────
 
