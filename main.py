@@ -1,4 +1,5 @@
-import os, json, http.client, base64, time, asyncio, logging
+import os, json, base64, time, asyncio, logging
+import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -76,24 +77,40 @@ STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "l
 
 def fn_1_env(k): return os.getenv(k, "Null")
 def fn_2_log(m): logger.info(f"[Reflect]: {m}"); return "Log recorded"
+
+# FIX 3: replaced eval with simpleeval to prevent code execution via user input
+
 def fn_3_math(e):
-    try: return eval(e, {"__builtins__": None}, {})
-    except: return "Math Err"
+    try:
+        from simpleeval import simple_eval
+        return simple_eval(e)
+    except Exception:
+        return "Math Err"
+
 def fn_4_fmt(d): return f"### ANALYSIS ###\n{d}"
 def fn_5_chk(g): return f"Goal Alignment: {g}"
 def fn_6_ui(d): return f"UI_UPDATE: {d}"
 def fn_7_mut(p): STATE["rules"] = p; return "Core Rules Redefined"
 
-def fn_commit(path, content, msg):
+# FIX 2: replaced blocking http.client with async httpx
+
+async def fn_commit(path, content, msg):
     try:
-        c = http.client.HTTPSConnection("api.github.com")
-        h = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
-        c.request("GET", f"/repos/{R}/contents/{path}", headers=h)
-        sha = json.loads(c.getresponse().read()).get("sha", "")
-        d = json.dumps({"message": msg, "content": base64.b64encode(content.encode()).decode(), "sha": sha})
-        c.request("PUT", f"/repos/{R}/contents/{path}", d, h)
-        return f"Saved_{c.getresponse().status}"
-    except: return "Save_Failed"
+        headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+        async with httpx.AsyncClient() as client:
+            get_resp = await client.get(
+                f"https://api.github.com/repos/{R}/contents/{path}",
+                headers=headers
+            )
+            sha = get_resp.json().get("sha", "")
+            put_resp = await client.put(
+                f"https://api.github.com/repos/{R}/contents/{path}",
+                headers=headers,
+                json={"message": msg, "content": base64.b64encode(content.encode()).decode(), "sha": sha}
+            )
+        return f"Saved_{put_resp.status_code}"
+    except Exception:
+        return "Save_Failed"
 
 TOOLS = {
     "env": fn_1_env, "log": fn_2_log, "math": fn_3_math,
@@ -160,26 +177,31 @@ async def call_llm(p) -> str:
         await asyncio.sleep(1.5)
 
         try:
-            c = http.client.HTTPSConnection("api.groq.com")
-            body = json.dumps({
-                "model": "groq/compound",
-                "messages": [
-                    {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
-                    {"role": "user", "content": p}
-                ],
-                "response_format": {"type": "json_object"}
-            })
-            c.request("POST", "/openai/v1/chat/completions", body,
-                      {"Authorization": f"Bearer {K}", "Content-Type": "application/json"})
-            resp = json.loads(c.getresponse().read().decode())
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
+                    json={
+                        "model": "groq/compound",
+                        "messages": [
+                            {"role": "system", "content": f"{STATE['rules']}. Response MUST be JSON: {{'tool': 'name', 'args': {{}}, 'thought': 'reasoning'}}"},
+                            {"role": "user", "content": p}
+                        ],
+                        "response_format": {"type": "json_object"}
+                    },
+                    timeout=30.0
+                )
+                resp = response.json()
 
-            # ── Log unexpected responses from Groq (e.g. auth/rate errors) ──
             if "choices" not in resp:
+                err = resp.get("error", {})
+                if err.get("type") == "permissions_error":
+                    logger.error(f"[Groq] Permissions error — aborting: {err.get('message')}")
+                    raise RuntimeError(f"Groq permissions error: {err.get('message')}")
                 logger.error(f"[Groq] Unexpected response (no 'choices'): {resp}")
                 GROQ_TOKEN_LOG.append((time.time(), 0))
                 return FALLBACK
 
-            # ── Track actual token usage from response ───────────────────────
             usage = resp.get("usage", {})
             total_tokens = usage.get("total_tokens", 500)
             GROQ_TOKEN_LOG.append((time.time(), total_tokens))
@@ -187,6 +209,8 @@ async def call_llm(p) -> str:
 
             return resp["choices"][0]["message"]["content"]
 
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(f"[Groq] API call failed: {e}", exc_info=True)
             GROQ_TOKEN_LOG.append((time.time(), 500))
@@ -199,7 +223,6 @@ async def run_autonomous_loop(input_str: str) -> str:
     for i in range(5):
         raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx}. Directive: {PRMPTS[i % 5]}")
 
-        # ── Guard: call_llm always returns a string, but be safe ─────────────
         if not raw:
             logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
             continue
@@ -214,6 +237,8 @@ async def run_autonomous_loop(input_str: str) -> str:
         if t in TOOLS:
             try:
                 res = TOOLS[t](**a)
+                if asyncio.iscoroutine(res):
+                    res = await res
             except Exception as e:
                 res = f"Tool error: {e}"
                 logger.error(f"[Loop] Step {i}: tool '{t}' raised: {e}", exc_info=True)
@@ -221,7 +246,7 @@ async def run_autonomous_loop(input_str: str) -> str:
         else:
             logger.warning(f"[Loop] Step {i}: unknown or missing tool '{t}'")
 
-        fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
+        await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
 
     return ctx
 
