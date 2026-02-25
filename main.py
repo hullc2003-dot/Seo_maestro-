@@ -106,13 +106,18 @@ def fn_5_chk(threshold: float = 0.8) -> bool:
 
 def fn_6_ui(d="", **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 
-def fn_7_mut(p="", **kwargs):
-    new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
-    if not new_rules or not new_rules.strip():
-        logger.warning("[mut] Rejected empty ruleset")
-        return "Mut rejected: empty ruleset"
-    STATE["rules"] = new_rules.strip()
-    return "Core Rules Redefined"
+def fn_7_mut(new_rule: str) -> None:
+    """
+    Mutate the agent's operational rules when alignment is insufficient.
+    Appends `new_rule` to the global `operational_rules` list and notifies the UI.
+    """
+    global operational_rules
+    if not isinstance(operational_rules, list):
+        operational_rules = []
+    operational_rules.append(new_rule)
+    logger.info("[fn_7_mut] Added new rule: %s", new_rule)
+    # Signal the UI that rules have been mutated
+    asyncio.create_task(signal_ui("Operational rules mutated"))
 
 JSON_ENFORCEMENT = (
     " Always respond with a single valid JSON object only – "
