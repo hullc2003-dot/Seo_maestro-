@@ -269,12 +269,12 @@ async def fn_auto_gen_code
             return True
 
     def validate_code(code: str, requirements: Dict) -> bool:
-    """Validate that the generated code meets structural requirements."""
-    # Example: ensure required function name exists
-    required_name = requirements.get("func")
-    if required_name and f"def {required_name}(" not in code:
-        return False
-    return True
+          """Validate that the generated code meets structural requirements."""
+          # Example: ensure required function name exists
+          required_name = requirements.get("func")
+          if required_name and f"def {required_name}(" not in code:
+          return False
+          return True
 
     def autonomous_code_dev(requirements: Dict) -> str:
         """Generate, test, and validate code autonomously."""
