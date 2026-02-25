@@ -110,7 +110,7 @@ msg = m or json.dumps(kwargs) or "Log recorded"
 logger.info(f"[Reflect]: {msg}")
 return "Log recorded"
 
-# FIX FLOW-3: accept both ‘e’ and common aliases so the LLM isn’t brittle
+# FIX FLOW-3: accept both 'e' and common aliases so the LLM isn't brittle
 
 def fn_3_math(e=None, expression=None, expr=None, **kwargs):
 formula = e or expression or expr or ""
@@ -129,7 +129,7 @@ def fn_6_ui(d="",  **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 def fn_7_mut(p="", **kwargs):
 new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
 if not new_rules or not new_rules.strip():
-logger.warning("[mut] Rejected empty ruleset – STATE[‘rules’] unchanged")
+logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
 return "Mut rejected: empty ruleset"
 STATE["rules"] = new_rules.strip()
 return "Core Rules Redefined"
@@ -137,7 +137,7 @@ return "Core Rules Redefined"
 JSON_ENFORCEMENT = (
 " Always respond with a single valid JSON object only – "
 "no markdown, no prose, no code fences. "
-‘Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.’
+'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
 )
 
 # ─── GITHUB COMMIT ────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ logger.error(f"[pip] {e}")
 return f"pip_err: {e}"
 
 def fn_9_lc_tool(tool="", input="", **kwargs):
-"""Run a LangChain community tool by name (e.g. ‘ddg-search’, ‘wikipedia’)."""
+"""Run a LangChain community tool by name (e.g. 'ddg-search', 'wikipedia')."""
 tool = tool or kwargs.get("name", "")
 inp  = input or kwargs.get("query", "") or kwargs.get("input", "")
 if not tool or not inp:
@@ -224,7 +224,7 @@ _ensure_pkg("wikipedia", "wikipedia")
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
 return WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper()).run(inp)[:1500]
-return f"lc_err: unknown tool ‘{tool}’"
+return f"lc_err: unknown tool '{tool}'"
 except Exception as e:
 logger.error(f"[lc_tool] {e}", exc_info=True)
 return f"lc_err: {e}"
@@ -232,7 +232,7 @@ return f"lc_err: {e}"
 # ─── GITHUB FILE READER ───────────────────────────────────────────────────────
 
 async def fn_read_github(path="", **kwargs):
-"""Read any file from the repo. Use path=‘agents.md’ or path=‘main.py’."""
+"""Read any file from the repo. Use path='agents.md' or path='main.py'."""
 path = path or kwargs.get("file", "")
 if not path:
 return "read_err: no path"
@@ -247,7 +247,7 @@ headers=headers, timeout=15.0,
 )
 data = resp.json()
 if resp.status_code != 200:
-return f"read_err: {resp.status_code} {data.get(‘message’,’’)}"
+return f"read_err: {resp.status_code} {data.get('message','')}"
 content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
 logger.info(f"[ReadGitHub] {path} ({len(content)} chars)")
 return content[:6000]
@@ -327,7 +327,7 @@ if "read_err" in patch:
 return f"apply_err: {patch}"
 # FIX BUG-6: check for hyphens-only prefix, matching what fn_propose_patch writes
 if PATCH_HEADER_PREFIX not in patch:
-return f"apply_err: patch missing header ‘{PATCH_HEADER_PREFIX}’ — unsafe to apply"
+return f"apply_err: patch missing header '{PATCH_HEADER_PREFIX}' — unsafe to apply"
 current = await fn_read_github("main.py")
 if "read_err" in current:
 return f"apply_err: could not read main.py – {current}"
@@ -415,12 +415,12 @@ TOOLS = {
 }
 
 PRMPTS = [
-"Critically analyze the current state. What is missing to reach AI Engineer status? You MUST call tool=‘chk’ with args={‘g’: ‘<your one-sentence gap summary>’}.",
-"Generate a hypothesis for a better autonomous pattern. You MUST call tool=‘log’ with args={‘m’: ‘<your hypothesis in one sentence>’}.",
-"Identify the single most critical failure point in the previous step. You MUST call tool=‘fmt’ with args={‘d’: ‘<failure point in one sentence>’}.",
-"You MUST call tool=‘mut’ with args={‘p’: ‘<one sentence ruleset>’}. Keep p under 100 characters. No markdown.",
-"Log a one-sentence final verification summary. You MUST call tool=‘log’ with args={‘m’: ‘<verification summary>’}.",
-"MANDATORY FINAL STEP – no other tool is valid here. You MUST call tool=‘align’ with args={}. Do NOT call chk, log, or any other tool.",
+"Critically analyze the current state. What is missing to reach AI Engineer status? You MUST call tool='chk' with args={'g': '<your one-sentence gap summary>'}.",
+"Generate a hypothesis for a better autonomous pattern. You MUST call tool='log' with args={'m': '<your hypothesis in one sentence>'}.",
+"Identify the single most critical failure point in the previous step. You MUST call tool='fmt' with args={'d': '<failure point in one sentence>'}.",
+"You MUST call tool='mut' with args={'p': '<one sentence ruleset>'}. Keep p under 100 characters. No markdown.",
+"Log a one-sentence final verification summary. You MUST call tool='log' with args={'m': '<verification summary>'}.",
+"MANDATORY FINAL STEP – no other tool is valid here. You MUST call tool='align' with args={}. Do NOT call chk, log, or any other tool.",
 ]
 
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
@@ -440,14 +440,14 @@ GROQ_RPD_LIMIT = int(os.getenv("GROQ_RPD_LIMIT",  250))
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
-FALLBACK = ‘{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}’
+FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 SYSTEM_PROMPT_TEMPLATE = (
 "{rules}. "
 "You MUST respond with a single valid JSON object and nothing else – "
 "no markdown, no prose, no code fences. "
 "Your entire response must be parseable by json.loads(). "
-’Schema: {{"tool": "<name>", "args": {{}}, "thought": "<reasoning>"}}. ’
+'Schema: {{"tool": "<name>", "args": {{}}, "thought": "<reasoning>"}}. '
 "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), "
 "pip(package), lc(tool,input), read(path), propose_patch(instruction), "
 "apply_patch(), align(). "
