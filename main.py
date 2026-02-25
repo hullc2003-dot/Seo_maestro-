@@ -117,13 +117,11 @@ def fn_5_chk(g="", **kwargs): return f"Goal Alignment: {g or json.dumps(kwargs)}
 def fn_6_ui(d="",  **kwargs): return f"UI_UPDATE: {d or json.dumps(kwargs)}"
 
 def fn_7_mut(p="", **kwargs):new_rules = p or kwargs.get("rules") or kwargs.get("ruleset") or ""
-if not new_rules or not new_rules.strip():logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
+    if not new_rules or not new_rules.strip():logger.warning("[mut] Rejected empty ruleset – STATE['rules'] unchanged")
 return "Mut rejected: empty ruleset"STATE["rules"] = new_rules.strip()
 return "Core Rules Redefined"
 
-JSON_ENFORCEMENT = (
-" Always respond with a single valid JSON object only – "
-"no markdown, no prose, no code fences. "
+JSON_ENFORCEMENT = (" Always respond with a single valid JSON object only – ""no markdown, no prose, no code fences. "
 'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
 )
 
