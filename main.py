@@ -393,41 +393,42 @@ async def call_llm(p) -> str:
 async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
-    ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
+        ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
 
-    # FIX BUG-3: PRMPTS[i] not PRMPTS[i % 5] — ensures step 5 gets the align prompt
-    raw = await call_llm(
-        f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i]}"
-    )
+        # FIX BUG-3: PRMPTS[i] not PRMPTS[i % 5] — ensures step 5 gets the align prompt
+        raw = await call_llm(
+            f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i]}"
+        )
 
-    if not raw:
-        logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
-        continue
+        if not raw:
+            logger.warning(f"[Loop] Step {i}: call_llm returned empty, skipping")
+            continue
 
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as e:
-        import re as _re
-        match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group())
-                logger.warning(f"[Loop] Step {i}: extracted JSON from markdown response")
-            except Exception:
-                data = None
-        else:
-            data = None
-        if not data:
-            if i == 3:
-                safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
-                data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted from markdown"}
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as e:
+            import re as _re
+            match = _re.search(r'[{].*[}]', raw, _re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                    logger.warning(f"[Loop] Step {i}: extracted JSON from markdown response")
+                except Exception:
+                    data = None
             else:
-                logger.error(f"[Loop] Step {i}: failed to parse LLM response: {e} | raw={raw!r}")
-                continue
+                data = None
+            
+            if not data:
+                if i == 3:
+                    safe = raw[:500].replace('"', "'").replace('\n', ' ').strip()
+                    data = {"tool": "mut", "args": {"p": safe}, "thought": "extracted from markdown"}
+                else:
+                    logger.error(f"[Loop] Step {i}: failed to parse LLM response: {e} | raw={raw!r}")
+                    continue
 
-    t, a = data.get("tool"), data.get("args", {})
+        t, a = data.get("tool"), data.get("args", {})
 
-    # Step guards
+   # Step guards
     if i == 4 and t != "log":
         logger.warning(f"[Loop] Step 4: LLM tried '{t}' — forcing log()")
         t = "log"
