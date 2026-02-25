@@ -229,8 +229,8 @@ async def fn_propose_patch(instruction="", **kwargs):
         return f"patch_err: could not read agents.md — {agents_spec}"
 
     prompt = (
-        f"You are a Python engineer. Here is the agents.md specification:\n{agents_spec[:2000]}\n\n"
-        f"Here is the current main.py (truncated):\n{current_code[:3000]}\n\n"
+        f"You are a Python engineer. Here is the agents.md specification:\n{agents_spec[:800]}\n\n"
+        f"Here is the current main.py (truncated):\n{current_code[:1500]}\n\n"
         f"Instruction: {instruction}\n\n"
         "Write ONLY the complete updated main.py Python source code. "
         "No explanation, no markdown fences, just raw Python."
@@ -284,13 +284,13 @@ async def fn_align_with_spec(**kwargs):
         return f"align_skipped: {agents_spec}"
     current_code = await fn_read_github("main.py")
     gap_prompt = (
-        f"agents.md specification:\n{agents_spec[:2000]}\n\n"
-        f"Current main.py (truncated):\n{current_code[:2000]}\n\n"
+        f"agents.md specification:\n{agents_spec[:800]}\n\n"
+        f"Current main.py (truncated):\n{current_code[:600]}\n\n"
         "In one sentence, what is the single most important capability in agents.md "
         "that is missing or incomplete in main.py right now?"
     )
     try:
-        await asyncio.sleep(3)
+        await asyncio.sleep(8)
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -311,6 +311,7 @@ async def fn_align_with_spec(**kwargs):
             return f"align_partial: {err}"
         gap = rdata["choices"][0]["message"]["content"].strip()
         logger.info(f"[Align] Gap identified: {gap}")
+        await asyncio.sleep(10)
         patch_result = await fn_propose_patch(instruction=gap)
         return f"Gap: {gap} | {patch_result}"
     except Exception as e:
@@ -410,16 +411,15 @@ async def call_llm(p) -> str:
                 if err.get("type") == "permissions_error":
                     logger.error(f"[Groq] Permissions error — aborting: {err.get('message')}")
                     raise RuntimeError(f"Groq permissions error: {err.get('message')}")
-                logger.error(f"[Groq] Unexpected response (no 'choices'): {resp}")
+                logger.error(f"[Groq] Unexpected response: {resp}")
                 GROQ_TOKEN_LOG.append((time.time(), 0))
                 return FALLBACK
 
             usage = resp.get("usage", {})
             total_tokens = usage.get("total_tokens", 500)
             GROQ_TOKEN_LOG.append((time.time(), total_tokens))
-            logger.info(f"[Groq] tokens: {total_tokens} | TPM: {sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD: {len(GROQ_DAY_CALLS)}/250")
+            logger.info(f"[Groq] tokens: {total_tokens} | RPD: {len(GROQ_DAY_CALLS)}/250")
             return resp["choices"][0]["message"]["content"]
-        except RuntimeError: raise
         except Exception as e:
             logger.error(f"[Groq] API call failed: {e}", exc_info=True)
             GROQ_TOKEN_LOG.append((time.time(), 500))
@@ -431,10 +431,9 @@ async def run_autonomous_loop(input_str: str) -> str:
     ctx = input_str
     for i in range(6):
         ctx_payload = ctx[-CTX_MAX_CHARS:] if len(ctx) > CTX_MAX_CHARS else ctx
-        raw = await call_llm(f"PRE-STEP REFLECTION. Current Context: {ctx_payload}. Directive: {PRMPTS[i % 6]}")
+        raw = await call_llm(f"PRE-STEP REFLECTION. Context: {ctx_payload}. Directive: {PRMPTS[i % 5]}")
 
         if not raw: continue
-
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -451,7 +450,7 @@ async def run_autonomous_loop(input_str: str) -> str:
                 else: continue
 
         t, a = data.get("tool"), data.get("args", {})
-        if i == 5:
+        if i == 5 and t != "align":
             t, a = "align", {}
 
         if not t or t.lower() == "none":
@@ -459,7 +458,7 @@ async def run_autonomous_loop(input_str: str) -> str:
             continue
 
         if t == "commit":
-            ctx += f"\n[Step {i}] Commit blocked mid-loop | Reasoning: {data.get('thought')}"
+            ctx += f"\n[Step {i}] Commit blocked mid-loop"
             continue
 
         if t in TOOLS:
@@ -479,7 +478,7 @@ async def run_autonomous_loop(input_str: str) -> str:
 def health(): return {"status": "ok"}
 
 @app.get("/status")
-def status(): return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE[["lvl"]]}
+def status(): return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
 @app.post("/chat")
 async def chat(request: Request):
