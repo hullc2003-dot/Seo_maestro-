@@ -8,6 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from typing import Dict, Any, Callable
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("AgentServer")
@@ -54,9 +55,9 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(","))
 
-K = (os.getenv("GROQ_API_KEY") or "").strip()
-T = (os.getenv("GH_TOKEN")     or "").strip()
-R = (os.getenv("REPO_PATH")    or "").strip()
+K = (os.getenv("GEMINI_API_KEY") or "").strip()
+T = (os.getenv("GH_TOKEN") or "").strip()
+R = (os.getenv("REPO_PATH") or "").strip()
 STATE = {"rules": "Goal: AI Engineer. Strategy: Deep Reflection over Speed.", "lvl": 1}
 CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 
@@ -81,16 +82,16 @@ JSON_ENFORCEMENT = (
     'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
 )
 
-GROQ_RATE_LOCK  = asyncio.Lock()
-GROQ_SEMAPHORE  = asyncio.Semaphore(3)
+GEMINI_RATE_LOCK  = asyncio.Lock()
+GEMINI_SEMAPHORE  = asyncio.Semaphore(3)
 
-GROQ_CALL_TIMES: list[float]             = []
-GROQ_TOKEN_LOG:  list[tuple[float, int]] = []
-GROQ_DAY_CALLS:  list[float]             = []
+GEMINI_CALL_TIMES: list[float]             = []
+GEMINI_TOKEN_LOG:  list[tuple[float, int]] = []
+GEMINI_DAY_CALLS:  list[float]             = []
 
-GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", 25))
-GROQ_TPM_LIMIT = int(os.getenv("GROQ_TPM_LIMIT", 28_000))
-GROQ_RPD_LIMIT = int(os.getenv("GROQ_RPD_LIMIT", 250))
+GEMINI_RPM_LIMIT = 25
+GEMINI_TPM_LIMIT = 14000
+GEMINI_RPD_LIMIT = 14000
 
 FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
@@ -104,77 +105,62 @@ SYSTEM_PROMPT_TEMPLATE = (
     "pip(package), lc(tool,input), read(path), propose_patch(instruction), "
     "apply_patch(), align(), create_module(filename,code,description), "
     "add_tool(name,code), add_step(prompt,position), list_tools(), list_steps(), "
-    "reload_prompts(), run_tests(filename), create_test(filename,code,description). "
+    "reload_prompts(), run_tests(filename), create_test(filename,code,description), "
+    "autonomous_code_dev(requirements). "
     "Use exactly these argument names. Do not add extra fields."
 )
 
+genai.configure(api_key=K)
+GEMINI_MODEL = genai.GenerativeModel('gemma-3-27b-it')
+
 async def call_llm(p) -> str:
-    async with GROQ_SEMAPHORE:
-        async with GROQ_RATE_LOCK:
+    async with GEMINI_SEMAPHORE:
+        async with GEMINI_RATE_LOCK:
             now = time.time()
-            GROQ_CALL_TIMES[:] = [t for t in GROQ_CALL_TIMES if now - t < 60]
-            GROQ_TOKEN_LOG[:]  = [(t, tk) for t, tk in GROQ_TOKEN_LOG if now - t < 60]
-            GROQ_DAY_CALLS[:]  = [t for t in GROQ_DAY_CALLS if now - t < 86_400]
+            GEMINI_CALL_TIMES[:] = [t for t in GEMINI_CALL_TIMES if now - t < 60]
+            GEMINI_TOKEN_LOG[:]  = [(t, tk) for t, tk in GEMINI_TOKEN_LOG if now - t < 60]
+            GEMINI_DAY_CALLS[:]  = [t for t in GEMINI_DAY_CALLS if now - t < 86400]
 
-            if len(GROQ_DAY_CALLS) >= GROQ_RPD_LIMIT:
-                wait = 86_400 - (now - GROQ_DAY_CALLS[0])
-                logger.warning(f"[Groq] RPD cap – waiting {wait:.0f}s")
+            if len(GEMINI_DAY_CALLS) >= GEMINI_RPD_LIMIT:
+                wait = 86400 - (now - GEMINI_DAY_CALLS[0])
+                logger.warning(f"[Gemini] RPD cap – waiting {wait:.0f}s")
                 await asyncio.sleep(wait)
 
-            if len(GROQ_CALL_TIMES) >= GROQ_RPM_LIMIT:
-                wait = 60 - (now - GROQ_CALL_TIMES[0])
-                logger.warning(f"[Groq] RPM cap – waiting {wait:.1f}s")
+            if len(GEMINI_CALL_TIMES) >= GEMINI_RPM_LIMIT:
+                wait = 60 - (now - GEMINI_CALL_TIMES[0])
+                logger.warning(f"[Gemini] RPM cap – waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
 
-            tokens_used = sum(tk for _, tk in GROQ_TOKEN_LOG)
-            if tokens_used >= GROQ_TPM_LIMIT:
-                wait = 60 - (now - GROQ_TOKEN_LOG[0][0])
-                logger.warning(f"[Groq] TPM cap ({tokens_used}) – waiting {wait:.1f}s")
+            tokens_used = sum(tk for _, tk in GEMINI_TOKEN_LOG)
+            if tokens_used >= GEMINI_TPM_LIMIT:
+                wait = 60 - (now - GEMINI_TOKEN_LOG[0][0])
+                logger.warning(f"[Gemini] TPM cap ({tokens_used}) – waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
 
             ts = time.time()
-            GROQ_CALL_TIMES.append(ts)
-            GROQ_DAY_CALLS.append(ts)
+            GEMINI_CALL_TIMES.append(ts)
+            GEMINI_DAY_CALLS.append(ts)
 
         await asyncio.sleep(1.5)
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-                    json={
-                        "model": "compound-beta",
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"]) + JSON_ENFORCEMENT},
-                            {"role": "user",   "content": p},
-                        ],
-                        "max_tokens": 512,
-                        "response_format": {"type": "json_object"},
-                    },
-                    timeout=30.0,
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"]) + JSON_ENFORCEMENT
+            response = await GEMINI_MODEL.generate_content_async(
+                [system_prompt, p],
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=512,
+                    response_mime_type="application/json"
                 )
-                resp = response.json()
-
-            if "choices" not in resp:
-                err = resp.get("error", {})
-                if err.get("type") == "permissions_error":
-                    raise RuntimeError(f"Groq permissions error: {err.get('message')}")
-                logger.error(f"[Groq] No 'choices': {resp}")
-                GROQ_TOKEN_LOG.append((time.time(), 0))
-                return FALLBACK
-
-            usage        = resp.get("usage", {})
-            total_tokens = usage.get("total_tokens", 500)
-            GROQ_TOKEN_LOG.append((time.time(), total_tokens))
-            logger.info(f"[Groq] tokens={total_tokens} | TPM={sum(tk for _, tk in GROQ_TOKEN_LOG)} | RPD={len(GROQ_DAY_CALLS)}")
-            return resp["choices"][0]["message"]["content"]
-
-        except RuntimeError:
-            raise
+            )
+            content = response.text
+            # Approximate token count
+            total_tokens = len(content.split()) * 2
+            GEMINI_TOKEN_LOG.append((time.time(), total_tokens))
+            logger.info(f"[Gemini] tokens≈{total_tokens} | TPM={sum(tk for _, tk in GEMINI_TOKEN_LOG)} | RPD={len(GEMINI_DAY_CALLS)}")
+            return content
         except Exception as e:
-            logger.error(f"[Groq] call failed: {e}", exc_info=True)
-            GROQ_TOKEN_LOG.append((time.time(), 500))
+            logger.error(f"[Gemini] call failed: {e}", exc_info=True)
+            GEMINI_TOKEN_LOG.append((time.time(), 500))
             return FALLBACK
 
 @app.get("/health")
