@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from typing import Dict, Any, Callable
 from google import genai
 # The client will automatically find your 'application-default' credentials
-client = genai.Client(vertexai=True, project="108183293108206939767", location="us-central1")
+
 
 
 
@@ -116,8 +116,7 @@ SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
-client = genai.Client(api_key=K)
-
+client = genai.Client(vertexai=True, project="108183293108206939767", location="us-central1")
 response = client.models.generate_content(
     model='gemma-3-27b-it', 
     contents='Hello!'
