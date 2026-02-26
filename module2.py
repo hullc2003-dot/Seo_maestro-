@@ -82,10 +82,6 @@ def fn_5_chk(threshold: float = 0.8) -> bool:
         return False
 
 
-def fn_6_ui(d="", **kwargs):
-    return f"UI_UPDATE: {d or json.dumps(kwargs)}"
-
-
 def fn_7_mut(new_rule: str) -> None:
     global operational_rules
     if not isinstance(globals().get("operational_rules"), list):
