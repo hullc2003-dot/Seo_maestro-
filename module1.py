@@ -79,7 +79,7 @@ async def signal_ui(status: str):
 JSON_ENFORCEMENT = (
     " Always respond with a single valid JSON object only – "
     "no markdown, no prose, no code fences. "
-    'Schema: {"tool": "<n>", "args": {}, "thought": "<reasoning>"}.'
+    'Schema: {{"tool": "<n>", "args": {}, "thought": "<reasoning>"}}.'
 )
 
 GEMINI_RATE_LOCK  = asyncio.Lock()
