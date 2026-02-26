@@ -110,8 +110,14 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Use exactly these argument names. Do not add extra fields."
 )
 
-genai.configure(api_key=K)
-genai.GenerativeModel('gemma-3-27b-it')
+
+client = genai.Client(api_key=K)
+
+response = client.models.generate_content(
+    model='gemma-3-27b-it', 
+    contents='Hello!'
+)
+
 
 async def call_llm(p) -> str:
     async with GEMINI_SEMAPHORE:
