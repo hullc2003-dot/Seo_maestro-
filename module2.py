@@ -70,16 +70,34 @@ async def fn_commit(path, content, msg):
         if not R:
             return "Save_Failed: no REPO_PATH"
 
-        import httpx
-        headers = {"Authorization": f"token {T}", "User-Agent": "AIEngAgent"}
+        # 🔐 HARD SANITIZATION
+        repo = str(R).strip().replace("\n", "").replace("\r", "")
+        file_path = str(path).strip().replace("\n", "").replace("\r", "")
 
+        if not repo or "/" not in repo:
+            logger.error(f"[Commit] Invalid REPO_PATH after strip: {repr(repo)}")
+            return "Save_Failed: invalid REPO_PATH"
+
+        headers = {
+            "Authorization": f"token {T.strip()}",
+            "User-Agent": "AIEngAgent",
+        }
+
+        url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+
+        logger.info(f"[Commit] URL => {repr(url)}")
+
+        import httpx
         async with httpx.AsyncClient() as client:
-            get_resp = await client.get(f"https://api.github.com/repos/{R}/contents/{path}", headers=headers)
-            get_data = get_resp.json()
-            sha = get_data.get("sha", "") if get_resp.status_code == 200 else ""
+            get_resp = await client.get(url, headers=headers)
+
+            sha = ""
+            if get_resp.status_code == 200:
+                get_data = get_resp.json()
+                sha = get_data.get("sha", "")
 
             put_resp = await client.put(
-                f"https://api.github.com/repos/{R}/contents/{path}",
+                url,
                 headers=headers,
                 json={
                     "message": msg,
@@ -89,9 +107,9 @@ async def fn_commit(path, content, msg):
             )
 
             if put_resp.status_code not in (200, 201):
+                logger.error(f"[Commit] PUT failed: {put_resp.status_code}")
                 return f"Save_Failed: PUT {put_resp.status_code}"
 
-            asyncio.create_task(fn_signal_ui(f"Committed {path}"))
             return f"Saved_{put_resp.status_code}"
 
     except Exception as e:
