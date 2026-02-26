@@ -3,4 +3,4 @@ uvicorn
 httpx
 python-dotenv
 simpleeval
-google.genai 
+google-genai 
