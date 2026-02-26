@@ -111,7 +111,7 @@ SYSTEM_PROMPT_TEMPLATE = (
 )
 
 genai.configure(api_key=K)
-GEMINI_MODEL = genai.GenerativeModel('gemma-3-27b-it')
+GEMINI_MODEL = genai.GenerativeModel('gemma-3')
 
 async def call_llm(p) -> str:
     async with GEMINI_SEMAPHORE:
