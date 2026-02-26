@@ -92,17 +92,17 @@ CTX_MAX_CHARS = int(os.getenv("CTX_MAX_CHARS", 8000))
 # =========================
 
 JSON_ENFORCEMENT = (
-    " Always respond with a single valid JSON object only – "
+    "Always respond with a single valid JSON object only – "
     "no markdown, no prose, no code fences. "
-    'Schema: {"tool": "<name>", "args": {}, "thought": "<reasoning>"}.'
+    'Schema: {{"tool": "<name>", "args": {{}}, "thought": "<reasoning>"}}.'
 )
 
 SYSTEM_PROMPT_TEMPLATE = (
-    "{rules}. "
+    "{{rules}}. "
     "You MUST respond with a single valid JSON object and nothing else – "
     "no markdown, no prose, no code fences. "
     "Your entire response must be parseable by json.loads(). "
-    'Schema: {"tool": "<name>", "args": {}, "thought": "<reasoning>"}. '
+    'Schema: {{"tool": "<name>", "args": {{}}, "thought": "<reasoning>"}}. '
     "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), "
     "pip(package), lc(tool,input), read(path), propose_patch(instruction), "
     "apply_patch(), align(), create_module(filename,code,description), "
