@@ -106,7 +106,7 @@ SYSTEM_PROMPT_TEMPLATE = (
     "no markdown, no prose, no code fences. "
     "Your entire response must be parseable by json.loads(). "
     'Schema: {"tool": "<name>", "args": {}, "thought": "<reasoning>"}. '
-    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), ui(d), mut(p), "
+    "Valid tools: env(k), log(m), math(e), fmt(d), chk(g), mut(p), "
     "pip(package), lc(tool,input), read(path), propose_patch(instruction), "
     "apply_patch(), align(), create_module(filename,code,description), "
     "add_tool(name,code), add_step(prompt,position), list_tools(), list_steps(), "
