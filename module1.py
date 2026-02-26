@@ -8,7 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from typing import Dict, Any, Callable
-import google.generativeai as genai
+import CodeGemma from google.genai
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("AgentServer")
