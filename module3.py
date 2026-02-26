@@ -104,6 +104,12 @@ async def run_autonomous_loop(input_str: str) -> str:
             logger.warning(f"[Loop] Step {i}: unknown tool '{t}'")
             ctx += f"\n[Step {i}] Unknown tool '{t}' | Reasoning: {data.get('thought')}"
 
+        # Self-improvement: Use autonomous_code_dev if needed
+        if "improve" in ctx.lower():
+            improve_req = {"func": "improved_func", "params": ["x"], "body": "return x + 1", "tests": [{"args": [1], "expected": 2}]}
+            improve_code = await fn_autonomous_code_dev(improve_req)
+            ctx += f"\nSelf-improved code: {improve_code}"
+
         i += 1
 
     commit_result = await fn_commit("engineer_log.md", ctx, "Intellectual Evolution Log")
