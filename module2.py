@@ -11,8 +11,9 @@ import os
 import ast
 import re
 import tempfile
+from typing import Dict, Any, Callable
 
-from module1 import K, T, R, STATE, CTX_MAX_CHARS, signal_ui, logger
+from module1 import K, T, R, STATE, CTX_MAX_CHARS, signal_ui, logger, call_llm
 
 def fn_1_env(k="", **kwargs): return os.getenv(k, "Null")
 
@@ -145,6 +146,38 @@ async def fn_propose_patch(instruction="", **kwargs):
         return f"patch_err: could not read main.py"
     if "read_err" in agents_spec:
         return f"patch_err: could not read agents.md"
+
+    # Detect differences without LLM
+    differences = []
+    if "FastAPI" not in current_code:
+        differences.append("Missing FastAPI import")
+
+    # Structural analysis via AST
+    try:
+        tree = ast.parse(current_code)
+        has_route = any(isinstance(node, ast.FunctionDef) and node.name == "some_route" for node in ast.walk(tree))
+        if not has_route:
+            differences.append("Missing route")
+    except SyntaxError:
+        return "patch_err: syntax error in main.py"
+
+    # Static rule validation with regex, AST, heuristics
+    import_regex = re.compile(r'^import\s+\w+')
+    imports = import_regex.findall(current_code)
+    if "import asyncio" not in imports:
+        differences.append("Missing asyncio import")
+
+    # If simple, insert template without LLM
+    if not differences or "complex" not in instruction.lower():
+        patch = PATCH_HEADER_PREFIX + " Simple fix —\n"
+        if "Missing FastAPI import" in differences:
+            patch += "from fastapi import FastAPI\n"
+        if "Missing route" in differences:
+            patch += "@app.get('/route')\ndef some_route():\n    return {'status': 'ok'}\n"
+        result = await fn_commit("main_patch.py", patch, f"[AutoPatch] {instruction[:80]}")
+        return f"Proposed patch committed as main_patch.py — {result}"
+
+    # Escalate to LLM if complex
     spec_head = agents_spec[:250].replace("\n", " ")
     code_tail = current_code[-350:]
     prompt = (
@@ -152,26 +185,14 @@ async def fn_propose_patch(instruction="", **kwargs):
         "Add ONLY the missing Python. No duplicate imports. "
         f"First line MUST be: {PATCH_HEADER_PREFIX} <desc> —\nNo markdown. Raw Python only. Max 40 lines."
     )
+    raw = await call_llm(prompt)
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-                json={"model": "groq/compound", "messages": [
-                    {"role": "system", "content": "You are a Python code generator. Output raw Python only."},
-                    {"role": "user",   "content": prompt},
-                ], "max_tokens": 1024},
-                timeout=60.0,
-            )
-            rdata2 = resp.json()
-            if "choices" not in rdata2:
-                return f"patch_err: groq={rdata2.get('error', rdata2)}"
-            proposed = rdata2["choices"][0]["message"]["content"].strip()
-            if proposed.startswith("```"): proposed = proposed.split("\n", 1)[1].rsplit("```", 1)[0]
-            result = await fn_commit("main_patch.py", proposed, f"[AutoPatch] {instruction[:80]}")
-            return f"Proposed patch committed as main_patch.py — {result}"
-    except Exception as e:
-        return f"patch_err: {e}"
+        data = json.loads(raw)
+        proposed = data.get("content", "")
+    except:
+        proposed = raw
+    result = await fn_commit("main_patch.py", proposed, f"[AutoPatch] {instruction[:80]}")
+    return f"Proposed patch committed as main_patch.py — {result}"
 
 async def fn_apply_patch(**kwargs):
     patch = await fn_read_github("main_patch.py")
@@ -204,26 +225,16 @@ async def fn_align_with_spec(**kwargs):
         f"code tail: {code_snippet} | "
         "ONE sentence: top missing capability?"
     )
-    gap_prompt = gap_prompt[:600]   # hard cap prevents 413
+    gap_prompt = gap_prompt[:600]
+    raw = await call_llm(gap_prompt)
     try:
-        await asyncio.sleep(8)
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {K}", "Content-Type": "application/json"},
-                json={"model": "compound-beta", "messages": [{"role": "user", "content": gap_prompt}], "max_tokens": 200},
-                timeout=30.0,
-            )
-            rdata = resp.json()
-            if "choices" not in rdata:
-                return f"align_partial: {rdata.get('error', rdata)}"
-            gap = rdata["choices"][0]["message"]["content"].strip()
-            logger.info(f"[Align] Gap: {gap}")
-            await asyncio.sleep(10)
-            patch_result = await fn_propose_patch(instruction=gap)
-            return f"Gap: {gap} | {patch_result}"
-    except Exception as e:
-        return f"align_err: {e}"
+        data = json.loads(raw)
+        gap = data.get("content", "")
+    except:
+        gap = raw
+    logger.info(f"[Align] Gap: {gap}")
+    patch_result = await fn_propose_patch(instruction=gap)
+    return f"Gap: {gap} | {patch_result}"
 
 async def fn_create_module(filename="", code="", description="", **kwargs):
     filename    = filename    or kwargs.get("file", "")
@@ -454,6 +465,62 @@ async def fn_reload_prompts(**kwargs):
     from module3 import PRMPTS
     return f"prompts_reloaded: {len(PRMPTS)} steps | from_agents_md={updated}"
 
+def _render_template(req: Dict) -> str:
+    """Create a simple function based on a high-level requirement."""
+    name = req.get("func", "generated_func")
+    params = req.get("params", [])
+    body = req.get("body", "return None")
+    param_str = ", ".join(params)
+    return f"def {name}({param_str}):\n    {body}\n"
+
+def generate_code(requirements: Dict) -> str:
+    """Generate Python source code from a requirement dict."""
+    return _render_template(requirements)
+
+def _load_function(code: str, func_name: str) -> Callable:
+    """Dynamically load the generated function."""
+    namespace: Dict[str, Any] = {}
+    exec(code, namespace)
+    return namespace[func_name]
+
+def test_code(code: str, requirements: Dict) -> bool:
+    """Run supplied test cases against the generated function."""
+    tests = requirements.get("tests", [])
+    if not tests:
+        return True
+    func_name = requirements.get("func", "generated_func")
+    try:
+        func = _load_function(code, func_name)
+    except Exception:
+        return False
+    for case in tests:
+        args = case.get("args", [])
+        expected = case.get("expected")
+        try:
+            result = func(*args)
+        except Exception:
+            return False
+        if result != expected:
+            return False
+    return True
+
+def validate_code(code: str, requirements: Dict) -> bool:
+    """Validate that the generated code meets structural requirements."""
+    required_name = requirements.get("func")
+    if required_name and f"def {required_name}(" not in code:
+        return False
+    return True
+
+async def fn_autonomous_code_dev(requirements: Dict = {}, **kwargs):
+    """Generate, test, and validate code autonomously."""
+    req = requirements or kwargs
+    code = generate_code(req)
+    if not test_code(code, req):
+        return "Testing failed"
+    if not validate_code(code, req):
+        return "Validation failed"
+    return code
+
 TOOLS: dict = {
     "env":           fn_1_env,
     "log":           fn_2_log,
@@ -477,4 +544,5 @@ TOOLS: dict = {
     "reload_prompts":  fn_reload_prompts,
     "create_test":     fn_create_test,
     "run_tests":       fn_run_tests,
+    "autonomous_code_dev": fn_autonomous_code_dev,
 }
