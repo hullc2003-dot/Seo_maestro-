@@ -118,7 +118,7 @@ SYSTEM_PROMPT_TEMPLATE = (
 
 client = genai.Client(api_key=K)
 response = client.models.generate_content(
-    model='gemma-3-27b-it', 
+    model='gemini', 
     contents='Hello!'
 )
 
