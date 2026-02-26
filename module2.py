@@ -14,7 +14,7 @@ import re
 import hashlib
 from typing import Dict, Any, Callable
 
-from module1 import T, R, STATE, CTX_MAX_CHARS, signal_ui, logger, call_llm
+from module1 import T, R, STATE, CTX_MAX_CHARS, logger, call_llm
 
 # =========================
 # LLM Guardrails + Cache
