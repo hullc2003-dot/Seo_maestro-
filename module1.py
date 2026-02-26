@@ -93,7 +93,7 @@ GEMINI_RPM_LIMIT = 25
 GEMINI_TPM_LIMIT = 14000
 GEMINI_RPD_LIMIT = 14000
 
-FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
+FALLBACK = '{{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}}'
 
 SYSTEM_PROMPT_TEMPLATE = (
     "{rules}. "
