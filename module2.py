@@ -88,8 +88,7 @@ def fn_7_mut(new_rule: str) -> None:
         operational_rules = []
     operational_rules.append(new_rule)
     logger.info("[fn_7_mut] Added new rule: %s", new_rule)
-    asyncio.create_task(signal_ui("Operational rules mutated"))
-
+    
 # =========================
 # GitHub Utilities
 # =========================
