@@ -67,7 +67,7 @@ GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", 25))
 GROQ_TPM_LIMIT = int(os.getenv("GROQ_TPM_LIMIT", 28_000))
 GROQ_RPD_LIMIT = int(os.getenv("GROQ_RPD_LIMIT", 250))
 
-FALLBACK = ‘{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}’
+FALLBACK = '{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}'
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
