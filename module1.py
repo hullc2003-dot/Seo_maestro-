@@ -9,6 +9,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from typing import Dict, Any, Callable
 from google import genai
+# The client will automatically find your 'application-default' credentials
+client = genai.Client(vertexai=True, project="108183293108206939767", location="us-central1")
+
+
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("AgentServer")
