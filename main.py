@@ -1,6 +1,6 @@
-“””
+"""
 main.py – FastAPI application, Groq LLM client, autonomous loop, and API routes.
-“””
+"""
 
 import asyncio
 import json
@@ -32,26 +32,26 @@ reload_prompts_from_agents_md,
 signal_ui,
 )
 
-logger = logging.getLogger(“AgentServer”)
+logger = logging.getLogger("AgentServer")
 
-K              = (os.getenv(“GROQ_API_KEY”) or “”).strip()
-CTX_MAX_CHARS  = int(os.getenv(“CTX_MAX_CHARS”, 8000))
+K              = (os.getenv("GROQ_API_KEY") or "").strip()
+CTX_MAX_CHARS  = int(os.getenv("CTX_MAX_CHARS", 8000))
 
 # ─── FASTAPI APP ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title=“Autonomous Agent”, version=“2.0”)
+app = FastAPI(title="Autonomous Agent", version="2.0")
 app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
 CORSMiddleware,
-allow_origins=os.getenv(“CORS_ORIGINS”, “*”).split(”,”),
-allow_methods=[”*”],
-allow_headers=[”*”],
+allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+allow_methods=["*"],
+allow_headers=["*"],
 )
 app.add_middleware(
 TrustedHostMiddleware,
-allowed_hosts=os.getenv(“ALLOWED_HOSTS”, “*”).split(”,”),
+allowed_hosts=os.getenv("ALLOWED_HOSTS", "*").split(","),
 )
 
 # ─── GROQ RATE LIMITING ───────────────────────────────────────────────────────
@@ -63,11 +63,11 @@ GROQ_CALL_TIMES: list[float]             = []
 GROQ_TOKEN_LOG:  list[tuple[float, int]] = []
 GROQ_DAY_CALLS:  list[float]             = []
 
-GROQ_RPM_LIMIT = int(os.getenv(“GROQ_RPM_LIMIT”, 25))
-GROQ_TPM_LIMIT = int(os.getenv(“GROQ_TPM_LIMIT”, 28_000))
-GROQ_RPD_LIMIT = int(os.getenv(“GROQ_RPD_LIMIT”, 250))
+GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", 25))
+GROQ_TPM_LIMIT = int(os.getenv("GROQ_TPM_LIMIT", 28_000))
+GROQ_RPD_LIMIT = int(os.getenv("GROQ_RPD_LIMIT", 250))
 
-FALLBACK = ‘{“tool”: “log”, “args”: {“m”: “API Overload”}, “thought”: “retry”}’
+FALLBACK = ‘{"tool": "log", "args": {"m": "API Overload"}, "thought": "retry"}’
 
 # ─── LLM CALL ─────────────────────────────────────────────────────────────────
 
@@ -251,104 +251,104 @@ return ctx
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
 
-@app.get(”/health”)
+@app.get("/health")
 def health():
-return {“status”: “ok”}
+return {"status": "ok"}
 
-@app.get(”/status”)
+@app.get("/status")
 def status():
-return {“status”: “Deep Thinking”, “rules”: STATE[“rules”], “lvl”: STATE[“lvl”]}
+return {"status": "Deep Thinking", "rules": STATE["rules"], "lvl": STATE["lvl"]}
 
-@app.get(”/introspect”)
+@app.get("/introspect")
 def introspect():
-“”“Live view of registered tools and current step sequence.”””
+"""Live view of registered tools and current step sequence."""
 return {
-“tools”: sorted(TOOLS.keys()),
-“steps”: [{“index”: i, “prompt”: p[:100]} for i, p in enumerate(PRMPTS)],
+"tools": sorted(TOOLS.keys()),
+"steps": [{"index": i, "prompt": p[:100]} for i, p in enumerate(PRMPTS)],
 }
 
-@app.post(”/chat”)
+@app.post("/chat")
 async def chat(request: Request):
 try:
 body    = await request.json()
-trigger = body.get(“input”, “”).strip()
+trigger = body.get("input", "").strip()
 if not trigger:
-return {“ok”: False, “error”: “No input provided”}
+return {"ok": False, "error": "No input provided"}
 output = await run_autonomous_loop(trigger)
-return {“ok”: True, “output”: output}
+return {"ok": True, "output": output}
 except Exception as e:
-logger.error(f”[Chat] {e}”, exc_info=True)
-return {“ok”: False, “error”: str(e)}
+logger.error(f"[Chat] {e}", exc_info=True)
+return {"ok": False, "error": str(e)}
 
-@app.post(”/deploy”)
+@app.post("/deploy")
 async def deploy(request: Request):
 body    = await request.json()
-trigger = body.get(“input”, “Manual Trigger via /deploy”)
+trigger = body.get("input", "Manual Trigger via /deploy")
 asyncio.create_task(run_autonomous_loop(trigger))
-return {“status”: “Agent loop started”, “trigger”: trigger}
+return {"status": "Agent loop started", "trigger": trigger}
 
-@app.post(”/tools/add”)
+@app.post("/tools/add")
 async def api_add_tool(request: Request):
-“”“REST shortcut: POST {“name”:”…”, “code”:”…”} to register a tool.”””
+"""REST shortcut: POST {"name":"…", "code":"…"} to register a tool."""
 body   = await request.json()
-result = fn_add_tool(name=body.get(“name”, “”), code=body.get(“code”, “”))
-return {“result”: result}
+result = fn_add_tool(name=body.get("name", ""), code=body.get("code", ""))
+return {"result": result}
 
-@app.post(”/steps/add”)
+@app.post("/steps/add")
 async def api_add_step(request: Request):
-“”“REST shortcut: POST {“prompt”:”…”, “position”: <int|null>} to add a step.”””
+"""REST shortcut: POST {"prompt":"…", "position": <int|null>} to add a step."""
 body   = await request.json()
-result = fn_add_step(prompt=body.get(“prompt”, “”), position=body.get(“position”))
-return {“result”: result}
+result = fn_add_step(prompt=body.get("prompt", ""), position=body.get("position"))
+return {"result": result}
 
-@app.post(”/modules/create”)
+@app.post("/modules/create")
 async def api_create_module(request: Request):
-“”“REST shortcut: POST {“filename”:”…”, “code”:”…”, “description”:”…”} to create a module.”””
+"""REST shortcut: POST {"filename":"…", "code":"…", "description":"…"} to create a module."""
 body   = await request.json()
 result = await fn_create_module(
-filename=body.get(“filename”, “”),
-code=body.get(“code”, “”),
-description=body.get(“description”, “”),
+filename=body.get("filename", ""),
+code=body.get("code", ""),
+description=body.get("description", ""),
 )
-return {“result”: result}
+return {"result": result}
 
-@app.post(”/tests/create”)
+@app.post("/tests/create")
 async def api_create_test(request: Request):
 body   = await request.json()
 result = await fn_create_test(
-filename=body.get(“filename”, “”),
-code=body.get(“code”, “”),
-description=body.get(“description”, “”),
+filename=body.get("filename", ""),
+code=body.get("code", ""),
+description=body.get("description", ""),
 )
-return {“result”: result}
+return {"result": result}
 
-@app.post(”/tests/run”)
+@app.post("/tests/run")
 async def api_run_tests(request: Request):
 body   = await request.json()
-result = await fn_run_tests(filename=body.get(“filename”, “”))
-return {“result”: result}
+result = await fn_run_tests(filename=body.get("filename", ""))
+return {"result": result}
 
-@app.post(”/prompts/reload”)
+@app.post("/prompts/reload")
 async def api_reload_prompts():
 updated = await reload_prompts_from_agents_md()
-return {“updated”: updated, “steps”: len(PRMPTS), “prompts”: PRMPTS}
+return {"updated": updated, "steps": len(PRMPTS), "prompts": PRMPTS}
 
-@app.get(”/prompts”)
+@app.get("/prompts")
 async def api_get_prompts():
-return {“steps”: len(PRMPTS), “prompts”: PRMPTS}
+return {"steps": len(PRMPTS), "prompts": PRMPTS}
 
 # ─── CATCH-ALL POST ───────────────────────────────────────────────────────────
 
-@app.api_route(”/{full_path:path}”, methods=[“POST”])
+@app.api_route("/{full_path:path}", methods=["POST"])
 async def catch_all_post(full_path: str, request: Request):
 try:
 body = await request.json()
 except Exception:
 body = {}
 trigger = (
-body.get(“input”) or body.get(“message”) or body.get(“text”)
-or body.get(“prompt”) or (json.dumps(body) if body else f”POST /{full_path}”)
+body.get("input") or body.get("message") or body.get("text")
+or body.get("prompt") or (json.dumps(body) if body else f"POST /{full_path}")
 )
-logger.info(f”[Catch-All] /{full_path} → {trigger[:80]}”)
+logger.info(f"[Catch-All] /{full_path} → {trigger[:80]}")
 asyncio.create_task(run_autonomous_loop(trigger))
-return {“status”: “Agent loop started”, “path”: f”/{full_path}”, “trigger”: trigger}
+return {"status": "Agent loop started", "path": f"/{full_path}", "trigger": trigger}
