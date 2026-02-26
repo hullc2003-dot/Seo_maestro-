@@ -1,4 +1,3 @@
-“””
 tools.py – Tool functions, GitHub helpers, prompt management, and tool/step registries.
 
 Imports expected by main.py:
@@ -7,7 +6,6 @@ TOOLS, PRMPTS, STATE, signal_ui,
 fn_commit, fn_reload_prompts, reload_prompts_from_agents_md,
 SYSTEM_PROMPT_TEMPLATE, JSON_ENFORCEMENT,
 )
-“””
 
 import asyncio
 import ast
