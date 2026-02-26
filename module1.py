@@ -152,7 +152,7 @@ async def call_llm(p) -> str:
         try:
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(rules=STATE["rules"]) + JSON_ENFORCEMENT
             response = await GEMINI_MODEL.generate_content_async(
-                [system_prompt, p],
+                [system_prompt, {p}],
                 generation_config=genai.types.GenerationConfig(
                     max_output_tokens=512,
                     response_mime_type="application/json"
